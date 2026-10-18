@@ -55,11 +55,6 @@ fn write_embedded_audio(s: &Session, path: &str, wav: &[u8]) -> Result<String> {
 /// Import a document: merge its bins, media and sequences into the project (one undo step), then
 /// link each media file that exists on disk. Returns the new sequences.
 pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Result<Value> {
-    import_with_replace(s, path, bytes, format, false)
-}
-
-/// With replacement, keep the open project until the interchange data and embedded audio are ready.
-pub fn import_with_replace(s: &mut Session, path: &str, bytes: &[u8], format: Format, replace: bool) -> Result<Value> {
     let p = std::path::Path::new(path);
     let opts = ImportOptions {
         base_dir: p.parent().map(|d| d.to_string_lossy().to_string()),
@@ -86,10 +81,6 @@ pub fn import_with_replace(s: &mut Session, path: &str, bytes: &[u8], format: Fo
         }
         _ => filmcraft_interchange::import_with(bytes, format, &opts).map_err(|e| EngineError::Other(format!("{path}: {e}")))?,
     };
-    if replace {
-        let name = s.project.name.clone();
-        s.execute("file.newProject", json!({"name": name}))?;
-    }
     let before: std::collections::HashSet<ItemId> = s.project.items.keys().copied().collect();
     let name = opts.name.clone().unwrap_or_else(|| format.name().to_string());
     let seqs = s.edit(&format!("Import {name}"), |proj, _| {

@@ -169,9 +169,18 @@ impl Backend {
         Backend::Local(Box::new(s))
     }
 
-    async fn exec(&mut self, id: &str, params: Value) -> Result<Value, String> {
+    async fn exec(&mut self, id: &str, mut params: Value) -> Result<Value, String> {
         match self {
-            Backend::Local(s) => s.execute(id, params).map_err(|e| e.to_string()),
+            // this process exits after the command, so a background export would never be written:
+            // long commands wait unless the caller says otherwise (#2342)
+            Backend::Local(s) => {
+                if filmcraft_automation::long_job::LONG_COMMANDS.contains(&id)
+                    && let Some(p) = params.as_object_mut()
+                {
+                    p.entry("wait").or_insert(json!(true));
+                }
+                s.execute(id, params).map_err(|e| e.to_string())
+            }
             // a blocking export runs as an app job polled by the client (#91, #92)
             Backend::Bridge(b) => b.execute(id, params).await.map_err(|e| e.to_string()),
         }

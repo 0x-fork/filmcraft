@@ -69,7 +69,9 @@ USAGE
 SUBCOMMANDS
   exec <id> [key=value ...]     run one command; prints its result as JSON
   exec <id> '<json params>'     same, params as one JSON object
-  run <script.jsonl | ->        run commands, one {\"id\",\"params\"} per line (# comments ok)
+  run <script.jsonl | ->        run commands, one {\"id\",\"params\"} per line (# comments ok), in
+                                order: file.exportMedia waits for its file before the next line
+                                (and before exit) unless its params say \"wait\": false
   commands [filter] [--json]    list commands (id, label, shortcut, params)
   describe <id>                 one command as JSON (menu, shortcut, params, enabled now)
   inspect [project|sequence]    project tree or active sequence as JSON (default: both)

@@ -156,7 +156,8 @@ fn run_waits_for_an_export_on_its_last_line() {
     let dir = std::env::temp_dir().join(format!("fc-cli-run-x-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let out = dir.join("last.wav");
-    let script = json!({"id": "file.exportMedia", "params": {"path": out.to_str().unwrap(), "format": "wav"}}).to_string();
+    // `"wait": null` waits too: only an explicit `false` doesn't
+    let script = json!({"id": "file.exportMedia", "params": {"path": out.to_str().unwrap(), "format": "wav", "wait": null}}).to_string();
     let mut child =
         Command::new(env!("CARGO_BIN_EXE_filmcraft-cli")).args(["--demo", "run", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     child.stdin.take().unwrap().write_all(format!("{script}\n").as_bytes()).unwrap();

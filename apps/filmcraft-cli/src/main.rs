@@ -179,7 +179,10 @@ impl Backend {
                 if filmcraft_automation::long_job::LONG_COMMANDS.contains(&id)
                     && let Some(p) = params.as_object_mut()
                 {
-                    p.entry("wait").or_insert(json!(true));
+                    // anything but an explicit `false` (missing, null, a typo'd value) waits
+                    if p.get("wait").and_then(Value::as_bool) != Some(false) {
+                        p.insert("wait".into(), json!(true));
+                    }
                 }
                 s.execute(id, params).map_err(|e| e.to_string())
             }

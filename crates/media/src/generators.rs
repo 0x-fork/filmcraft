@@ -580,12 +580,18 @@ mod tests {
         for rate in [FrameRate::FPS_24, FrameRate::FPS_25, FrameRate::FPS_30, FrameRate::FPS_50, FrameRate::FPS_60, FrameRate::FPS_23_976, FrameRate::FPS_29_97]
         {
             let source = GeneratorSource::new(Generator::CountingLeader, 64, 36, rate, Tick(3 * TICKS_PER_SECOND));
+            let carrier = GeneratorSource::new(Generator::Tone { hz: 1000.0, db: -20.0 }, 64, 36, rate, Tick(3 * TICKS_PER_SECOND));
             let frame_samples = (sample_rate as u64 * rate.den as u64).div_ceil(rate.num as u64) as usize;
             for start in [0, sample_rate as i64, 2 * sample_rate as i64] {
                 let audio = source.audio(start, frame_samples + 8, sample_rate).unwrap();
-                for channel in &audio.channels {
-                    assert!(channel[..frame_samples].iter().any(|s| s.abs() > 0.05), "{rate:?}, start {start}: missing beep");
-                    assert_ne!(channel[frame_samples - 1], 0.0, "{rate:?}, start {start}: beep stops before one frame");
+                let expected = carrier.audio(start, frame_samples, sample_rate).unwrap();
+                for (channel, carrier_channel) in audio.channels.iter().zip(&expected.channels) {
+                    assert!(carrier_channel.iter().any(|s| s.abs() > 0.05), "{rate:?}, start {start}: carrier should be audible");
+                    assert_eq!(
+                        &channel[..frame_samples],
+                        carrier_channel.as_slice(),
+                        "{rate:?}, start {start}: in-frame beep differs from the ungated carrier"
+                    );
                     assert!(channel[frame_samples..].iter().all(|s| *s == 0.0), "{rate:?}, start {start}: beep extends beyond one frame");
                 }
             }
@@ -596,10 +602,12 @@ mod tests {
     fn counting_leader_custom_rate_stops_at_exact_sample_boundary() {
         let sample_rate = 41_000;
         let source = GeneratorSource::new(Generator::CountingLeader, 64, 36, FrameRate { num: 41, den: 1 }, Tick(3 * TICKS_PER_SECOND));
+        let carrier = GeneratorSource::new(Generator::Tone { hz: 1000.0, db: -20.0 }, 64, 36, FrameRate { num: 41, den: 1 }, Tick(3 * TICKS_PER_SECOND));
         for start in [0, 41_000, 82_000] {
             let audio = source.audio(start, 1_008, sample_rate).unwrap();
-            for channel in &audio.channels {
-                assert_ne!(channel[999], 0.0, "missing final in-frame sample");
+            let expected = carrier.audio(start, 1_000, sample_rate).unwrap();
+            for (channel, carrier_channel) in audio.channels.iter().zip(&expected.channels) {
+                assert_eq!(&channel[..1_000], carrier_channel.as_slice(), "custom-rate beep stops before the frame boundary");
                 assert!(channel[1_000..].iter().all(|s| *s == 0.0), "sample exactly at frame boundary must be silent");
             }
         }
@@ -636,11 +644,14 @@ mod tests {
         let default_rate = FrameRate::default();
         let frame_samples = (u64::from(sample_rate) * default_rate.den as u64).div_ceil(default_rate.num as u64);
         let start = frame_samples as i64 - 2;
+        let carrier = GeneratorSource::new(Generator::Tone { hz: 1000.0, db: -20.0 }, 64, 36, default_rate, Tick(3 * TICKS_PER_SECOND));
+        let expected = carrier.audio(start, 2, sample_rate).unwrap();
+        assert!(expected.channels.iter().all(|channel| channel.iter().any(|sample| sample.abs() > 0.05)));
         for rate in [FrameRate { num: 41, den: 0 }, FrameRate { num: 0, den: 0 }, FrameRate { num: i64::MIN, den: 1 }, FrameRate { num: 1, den: i64::MIN }] {
             let source = GeneratorSource::new(Generator::CountingLeader, 64, 36, rate, Tick(3 * TICKS_PER_SECOND));
             let audio = source.audio(start, 8, sample_rate).unwrap();
-            for channel in &audio.channels {
-                assert_ne!(channel[1], 0.0, "{rate:?}: missing final fallback-frame sample");
+            for (channel, carrier_channel) in audio.channels.iter().zip(&expected.channels) {
+                assert_eq!(&channel[..2], carrier_channel.as_slice(), "{rate:?}: fallback beep stops before the frame boundary");
                 assert!(channel[2..].iter().all(|sample| *sample == 0.0), "{rate:?}: fallback gate exceeds one frame");
             }
             let fallback = GeneratorSource::new(Generator::CountingLeader, 64, 36, default_rate, Tick(3 * TICKS_PER_SECOND));

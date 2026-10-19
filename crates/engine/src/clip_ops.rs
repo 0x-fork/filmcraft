@@ -929,10 +929,11 @@ fn consolidate_duplicates(s: &mut Session, _: &Value) -> Result<Value> {
     let mut groups: BTreeMap<String, Vec<ItemId>> = BTreeMap::new();
     for it in s.project.items.values() {
         if let ItemKind::Media(m) = &it.kind {
-            // A generator's source frame rate can change its output (including a
-            // counting leader's one-frame beep), even when its duration matches.
-            // File media keeps its existing duplicate grouping.
-            let generator_rate = if matches!(&m.media, MediaRef::Generator(_)) { m.info.video.as_ref().map(|v| v.frame_rate) } else { None };
+            let generator_rate = if matches!(&m.media, MediaRef::Generator(filmcraft_media::Generator::CountingLeader)) {
+                m.info.video.as_ref().map(|v| v.frame_rate)
+            } else {
+                None
+            };
             let shape = (m.info.video.is_some(), m.info.has_audio(), m.info.duration, generator_rate);
             let key = serde_json::to_string(&(&m.media, &m.interpret, m.offline, shape)).unwrap_or_default();
             groups.entry(key).or_default().push(it.id);

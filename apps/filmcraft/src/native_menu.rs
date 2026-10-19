@@ -20,7 +20,9 @@ fn accel(s: &str) -> Option<Accelerator> {
 }
 
 /// The app menu's Quit item: the `app.quit` command (which asks to save unsaved changes) on its
-/// shortcut, Cmd+Q unless remapped in the Keyboard Shortcuts editor.
+/// shortcut, Cmd+Q unless remapped in the Keyboard Shortcuts editor. The key equivalent is read
+/// once, when the menu bar is built: `app.quit` has no menu path, so it is not in the menu tree the
+/// updater receives, and a remap shows on the Quit item after the next launch.
 fn quit_item(app: &FilmcraftApp) -> (&'static str, Option<Accelerator>) {
     let keys = app.session.shortcuts.primary("app.quit").unwrap_or_else(|| "Cmd+Q".into());
     ("app.quit", accel(&keys))

@@ -37,7 +37,6 @@ pub mod control;
 pub mod crash;
 pub mod credits;
 pub mod dock;
-mod dock_shared;
 mod dock_ui;
 /// Thumbnail textures kept before the least recently used are freed (each is up to 320 px wide).
 const MAX_THUMB_TEXTURES: usize = 512;
@@ -73,7 +72,7 @@ use filmcraft_time::Tick;
 use serde_json::{Value, json};
 
 pub use control::ControlRequest;
-use dock::PanelKind;
+use dock::{LayoutExt as _, PanelKind};
 use frames::{FrameKey, FrameServer, Target};
 use native_dialogs::FileDialog;
 use state::UiState;
@@ -854,9 +853,7 @@ impl FilmcraftApp {
 
     pub fn set_workspace(&mut self, name: &str) {
         self.ui.workspace = name.to_string();
-        let layout = dock::saved_docking(&self.workspaces, name);
-        self.ui.dock = layout.root;
-        self.ui.floating = layout.floating;
+        self.ui.dock = dock::saved_docking(&self.workspaces, name);
         self.pending_panel_raise = None;
         self.ui.keys.maximized = None;
         if self.workspaces.current != name {
@@ -874,20 +871,20 @@ impl FilmcraftApp {
     pub fn show_panel(&mut self, p: PanelKind) {
         // closed while floating: it floats again where it was (#1985); taken before the Timeline's
         // own restore below docks it
-        let open = self.ui.dock.contains(p) || self.ui.floating.iter().any(|group| group.panels.contains(&p));
+        let open = self.ui.dock.contains(&p);
         let refloat = match self.ui.closed_floating.iter().position(|(k, _)| *k == p) {
             Some(i) if !open => Some(self.ui.closed_floating.remove(i).1),
             _ => None,
         };
-        if p == PanelKind::Timeline && !self.ui.floating.iter().any(|group| group.panels.contains(&p)) {
+        if p == PanelKind::Timeline {
             self.ui.dock.restore_timeline();
         }
-        if !self.ui.dock.contains(p) && !self.ui.floating.iter().any(|group| group.panels.contains(&p)) {
+        if !self.ui.dock.contains(&p) {
             let near = match p {
                 // a side panel beside Properties (or Essential Sound), never over the Program monitor
                 PanelKind::TextToSpeech => [PanelKind::Properties, PanelKind::EssentialSound, PanelKind::EssentialGraphics]
                     .into_iter()
-                    .find(|k| self.ui.dock.contains(*k))
+                    .find(|k| self.ui.dock.contains(k))
                     .unwrap_or(PanelKind::Program),
                 PanelKind::LumetriColor | PanelKind::EssentialGraphics | PanelKind::EssentialSound | PanelKind::Properties => PanelKind::Program,
                 PanelKind::Source
@@ -1804,9 +1801,7 @@ impl FilmcraftApp {
                 filmcraft_engine::Event::OpenSequence(_) => {
                     // show the sequence with its own view (or fitted, the first time)
                     self.timeline_view_of = None;
-                    if !self.ui.floating.iter().any(|group| group.panels.contains(&PanelKind::Timeline)) {
-                        self.ui.dock.restore_timeline();
-                    }
+                    self.ui.dock.restore_timeline();
                     let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Timeline });
                 }
                 filmcraft_engine::Event::OpenSource(_) => {

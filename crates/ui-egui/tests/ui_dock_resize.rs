@@ -4,7 +4,7 @@ use egui::{Event, Id, Key, Modifiers, PointerButton, Rect, pos2, vec2};
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::dock::{DockNode, PanelKind, SplitSize};
+use filmcraft_ui_egui::dock::PanelKind;
 use filmcraft_ui_egui::theme::ThemeKind;
 use serde_json::json;
 
@@ -34,8 +34,8 @@ fn snapshots(h: &mut Harness<'_, FilmcraftApp>, directory: Option<&std::path::Pa
 }
 
 fn first_size(h: &Harness<'_, FilmcraftApp>) -> f32 {
-    match h.state().ui.dock {
-        DockNode::Split { size: SplitSize::FixedA(value), .. } => value,
+    match h.state().ui.dock.root {
+        Some(craft_ui::docking::Node::Split { size: craft_ui::layout::SplitSize::FixedFirst(value), .. }) => value,
         ref other => panic!("fixed-size mode changed: {other:?}"),
     }
 }
@@ -55,16 +55,19 @@ fn focused_dock_resize_owns_arrows_and_keeps_pointer_dragging() {
     frames(&mut h, 4);
     snapshots(&mut h, directory.as_deref(), "workspace");
     h.state_mut().ui.focused = PanelKind::Timeline;
-    h.state_mut().ui.dock = DockNode::Split {
-        vertical: false,
-        size: SplitSize::FixedA(400.0),
-        a: Box::new(DockNode::Tabs { panels: vec![PanelKind::Project], active: 0 }),
-        b: Box::new(DockNode::Tabs { panels: vec![PanelKind::Timeline], active: 0 }),
+    h.state_mut().ui.dock = craft_ui::docking::Layout {
+        root: Some(craft_ui::docking::Node::Split {
+            axis: craft_ui::layout::SplitAxis::Horizontal,
+            size: craft_ui::layout::SplitSize::FixedFirst(400.0),
+            first: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Project], active: 0 }),
+            second: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Timeline], active: 0 }),
+        }),
+        floating: vec![],
     };
     frames(&mut h, 3);
     let before_project = h.state().session.project.clone();
     let before_playheads = h.state().session.state.playheads.clone();
-    let id = Id::new(("dock-gutter", String::new()));
+    let id = Id::new("filmcraft-docking").with(("split", &Vec::<bool>::new()));
     h.ctx.memory_mut(|memory| memory.request_focus(id));
     frames(&mut h, 2);
     assert_eq!(h.ctx.memory(|memory| memory.focused()), Some(id));
@@ -110,11 +113,14 @@ fn space_plays_after_a_pane_is_resized_with_the_pointer() {
     let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(move |_| app);
     frames(&mut h, 4);
     h.state_mut().ui.focused = PanelKind::Timeline;
-    h.state_mut().ui.dock = DockNode::Split {
-        vertical: false,
-        size: SplitSize::FixedA(400.0),
-        a: Box::new(DockNode::Tabs { panels: vec![PanelKind::Project], active: 0 }),
-        b: Box::new(DockNode::Tabs { panels: vec![PanelKind::Timeline], active: 0 }),
+    h.state_mut().ui.dock = craft_ui::docking::Layout {
+        root: Some(craft_ui::docking::Node::Split {
+            axis: craft_ui::layout::SplitAxis::Horizontal,
+            size: craft_ui::layout::SplitSize::FixedFirst(400.0),
+            first: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Project], active: 0 }),
+            second: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Timeline], active: 0 }),
+        }),
+        floating: vec![],
     };
     frames(&mut h, 3);
     let element = h.state().auto.find("dock.gutter.").unwrap();
@@ -131,7 +137,7 @@ fn space_plays_after_a_pane_is_resized_with_the_pointer() {
     frames(&mut h, 3);
     assert_eq!(first_size(&h), 420.0);
     // The divider keeps keyboard focus so arrows can nudge it; that must not cost the editor its shortcuts.
-    assert_eq!(h.ctx.memory(|memory| memory.focused()), Some(Id::new(("dock-gutter", String::new()))));
+    assert_eq!(h.ctx.memory(|memory| memory.focused()), Some(Id::new("filmcraft-docking").with(("split", &Vec::<bool>::new()))));
     press(&mut h, Key::Space);
     assert!(h.state().playback.playing, "Space must start playback after resizing a pane (#1482)");
     press(&mut h, Key::Space);

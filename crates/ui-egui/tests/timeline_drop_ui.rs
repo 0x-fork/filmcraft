@@ -287,7 +287,7 @@ fn offscreen_float_uses_rendered_clamp_and_maximized_timeline_ignores_hidden_flo
     // The very wide offscreen float is clamped back to x=0, over this row.
     float_panel(&mut h, "Info", [-5000.0, at.y - 60.0, 1500.0, 200.0]);
     let visible = control_rect(&h, "panel.Info");
-    assert!(visible.contains(at), "rendered={visible:?}, drop={at:?}, floats={:?}", h.state().ui.floating);
+    assert!(visible.contains(at), "rendered={visible:?}, drop={at:?}, floats={:?}", h.state().ui.dock.floating);
     assert!(!hover_at(&mut h, at));
     drop_at(&mut h, at, &still("drop_clamped_occlusion.png"));
     assert_eq!(clip_counts(&h), (0, 0));
@@ -320,7 +320,7 @@ fn os_cursor_hook_selects_destination_when_egui_pointer_has_no_motion() {
     h.input_mut().dropped_files.clear();
     step(&mut h);
     assert_eq!(clip_counts(&h), (0, 0));
-    h.state_mut().ui.floating.clear();
+    h.state_mut().ui.dock.floating.clear();
     h.input_mut().dropped_files.push(std::sync::Arc::new(OsFile(still("drop_os_hook_visible.png"))));
     step(&mut h);
     h.input_mut().dropped_files.clear();

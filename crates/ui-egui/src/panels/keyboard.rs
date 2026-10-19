@@ -235,7 +235,7 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
 /// Maximize `p`, or restore the layout when a panel is maximized (also the panel menu's Maximize /
 /// Restore Frame). A maximized panel that has since been closed counts as restored.
 pub(crate) fn toggle_maximize(app: &mut FilmcraftApp, p: PanelKind) -> Value {
-    let current = app.ui.keys.maximized.filter(|q| app.ui.dock.contains(*q) || app.ui.floating.iter().any(|g| g.panels.contains(q)));
+    let current = app.ui.keys.maximized.filter(|q| app.ui.dock.contains(q));
     app.ui.keys.maximized = if current.is_some() { None } else { Some(p) };
     if let Some(p) = app.ui.keys.maximized {
         let _ = app.apply_dock(craft_ui::docking::Action::Activate { panel: p });
@@ -255,11 +255,8 @@ fn panel_under_pointer(app: &FilmcraftApp, ctx: &egui::Context) -> Option<PanelK
 
 /// Visible panels in layout order (the active tab of each frame).
 fn visible_panels(app: &FilmcraftApp) -> Vec<PanelKind> {
-    let mut all = Vec::new();
-    app.ui.dock.panels(&mut all);
-    let mut visible: Vec<_> = all.into_iter().filter(|p| app.ui.dock.is_visible(*p) && !p.compact()).collect();
-    visible.extend(app.ui.floating.iter().filter_map(|group| group.panels.get(group.active).copied()).filter(|panel| !panel.compact()));
-    visible
+    use crate::dock::LayoutExt as _;
+    app.ui.dock.visible_panels().into_iter().filter(|p| !p.compact()).collect()
 }
 
 fn cycle_panel(app: &mut FilmcraftApp, next: bool) -> Value {

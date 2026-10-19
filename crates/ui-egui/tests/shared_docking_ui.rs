@@ -1,34 +1,55 @@
 //! Shared docking preserves FilmCraft document state and legacy workspace files.
 
-use craft_ui::docking::{Action, Placement, Zone};
+use craft_ui::docking::{Action, Node, Placement, Zone};
+use craft_ui::layout::{SplitAxis, SplitSize};
 use egui::{Event, Modifiers, PointerButton, Rect, pos2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::{
     FilmcraftApp,
-    dock::{self, DockNode, Layout, PanelKind, SplitSize},
+    dock::{self, Layout, LayoutExt, PanelKind},
     menus,
 };
 use serde_json::json;
 
-fn layout() -> Layout {
-    Layout {
-        root: DockNode::Split {
-            vertical: false,
-            size: SplitSize::FixedA(400.0),
-            a: Box::new(DockNode::Tabs { panels: vec![PanelKind::Project, PanelKind::Info, PanelKind::History], active: 1 }),
-            b: Box::new(DockNode::Tabs { panels: vec![PanelKind::Source, PanelKind::Program], active: 1 }),
-        },
-        floating: vec![],
+fn tabs(panels: &[PanelKind], active: usize) -> Node<PanelKind> {
+    Node::Tabs { panels: panels.to_vec(), active }
+}
+
+fn split(vertical: bool, size: SplitSize, a: Node<PanelKind>, b: Node<PanelKind>) -> Node<PanelKind> {
+    Node::Split { axis: if vertical { SplitAxis::Vertical } else { SplitAxis::Horizontal }, size, first: Box::new(a), second: Box::new(b) }
+}
+
+fn root(node: Node<PanelKind>) -> Layout {
+    Layout { root: Some(node), floating: vec![] }
+}
+
+/// Whether a panel is in the docked frame tree (not a floating window).
+trait Docked {
+    fn docked(&self, panel: PanelKind) -> bool;
+}
+
+impl Docked for Layout {
+    fn docked(&self, panel: PanelKind) -> bool {
+        Layout { root: self.root.clone(), floating: vec![] }.contains(&panel)
     }
+}
+
+fn layout() -> Layout {
+    root(split(
+        false,
+        SplitSize::FixedFirst(400.0),
+        tabs(&[PanelKind::Project, PanelKind::Info, PanelKind::History], 1),
+        tabs(&[PanelKind::Source, PanelKind::Program], 1),
+    ))
 }
 
 #[test]
 fn shared_transactions_keep_selection_and_reject_invalid_moves_atomically() {
     let mut layout = layout();
     layout.apply(Action::Close { panel: PanelKind::Project }).unwrap();
-    assert!(layout.root.is_visible(PanelKind::Info));
+    assert!(layout.is_visible(PanelKind::Info));
     let before = layout.clone();
     for action in [
         Action::Move { panel: PanelKind::Info, anchor: PanelKind::Tools, placement: Placement::Split(Zone::Left) },
@@ -41,20 +62,22 @@ fn shared_transactions_keep_selection_and_reject_invalid_moves_atomically() {
     layout.apply(Action::Float { panel: PanelKind::Info, rect: [50.0, 50.0, 400.0, 300.0] }).unwrap();
     layout.apply(Action::Move { panel: PanelKind::Info, anchor: PanelKind::Program, placement: Placement::Split(Zone::Bottom) }).unwrap();
     assert!(layout.floating.is_empty());
-    assert!(layout.root.is_visible(PanelKind::Info));
+    assert!(layout.is_visible(PanelKind::Info));
 }
 
 #[test]
 fn builtin_and_legacy_workspace_shapes_roundtrip_and_save_floating() {
     for name in dock::WORKSPACES {
-        let root = dock::workspace(name);
-        let before = serde_json::to_value(&root).unwrap();
-        let prefs: dock::WorkspacePrefs = serde_json::from_value(json!({"saved": [{"name": name, "layout": before}], "current": name})).unwrap();
-        let loaded = dock::saved_docking(&prefs, name);
-        loaded.validate().unwrap();
-        assert_eq!(loaded.root, root);
-        assert!(loaded.floating.is_empty());
-        assert!(serde_json::to_value(&prefs).unwrap()["saved"][0].get("floating").is_none());
+        let layout = dock::workspace(name);
+        for entry in
+            [json!({"name": name, "workspace": dock::Workspace::new(layout.clone())}), json!({"name": name, "layout": legacy(layout.root.as_ref().unwrap())})]
+        {
+            let prefs: dock::WorkspacePrefs = serde_json::from_value(json!({"saved": [entry], "current": name})).unwrap();
+            let loaded = dock::saved_docking(&prefs, name);
+            loaded.validate().unwrap();
+            assert_eq!(loaded, layout);
+            assert!(serde_json::to_value(&prefs).unwrap()["saved"][0].get("floating").is_none());
+        }
     }
     let dir = std::env::temp_dir().join(format!("filmcraft-shared-dock-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -62,13 +85,13 @@ fn builtin_and_legacy_workspace_shapes_roundtrip_and_save_floating() {
     session.prefs_path = Some(dir.join("preferences.json"));
     let mut app = FilmcraftApp::new(session);
     let ctx = egui::Context::default();
-    app.ui.dock = layout().root;
+    app.ui.dock = layout();
     menus::invoke(&mut app, &ctx, "window.floatPanel", json!({"panel": "Info", "rect": [45, 65, 420, 320]})).unwrap();
     menus::invoke(&mut app, &ctx, "window.workspace.saveAs", json!({"name": "Floating test"})).unwrap();
     let prefs = dock::WorkspacePrefs::load(&dir.join(dock::WORKSPACES_FILE));
     let restored = dock::saved_docking(&prefs, "Floating test");
-    assert_eq!(restored.floating, app.ui.floating);
-    assert_eq!(restored.root, app.ui.dock);
+    assert_eq!(restored, app.ui.dock);
+    assert!(prefs.saved[0].layout.is_null() && !prefs.saved[0].workspace.is_null());
     let mut restarted_session = Session::default();
     restarted_session.prefs_path = Some(dir.join("preferences.json"));
     let restarted = FilmcraftApp::new(restarted_session);
@@ -76,32 +99,49 @@ fn builtin_and_legacy_workspace_shapes_roundtrip_and_save_floating() {
     for _ in 0..4 {
         step(&mut h);
     }
-    assert_eq!(h.state().ui.dock, restored.root);
-    assert_eq!(h.state().ui.floating, restored.floating);
+    assert_eq!(h.state().ui.dock, restored);
     std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
 fn legacy_effects_workspace_drops_only_the_known_inactive_duplicate() {
     let expected = dock::workspace("Effects");
-    let mut legacy = expected.clone();
-    fn duplicate(node: &mut DockNode) {
+    let mut legacy_tree = expected.root.clone().unwrap();
+    fn duplicate(node: &mut Node<PanelKind>) {
         match node {
-            DockNode::Tabs { panels, active } if panels.as_slice() == [PanelKind::EssentialGraphics] => {
+            Node::Tabs { panels, active } if panels.as_slice() == [PanelKind::EssentialGraphics] => {
                 panels.insert(0, PanelKind::EffectControls);
                 *active = 1;
             }
-            DockNode::Split { a, b, .. } => {
-                duplicate(a);
-                duplicate(b);
+            Node::Split { first, second, .. } => {
+                duplicate(first);
+                duplicate(second);
             }
-            DockNode::Tabs { .. } => {}
+            _ => {}
         }
     }
-    duplicate(&mut legacy);
+    duplicate(&mut legacy_tree);
     let prefs: dock::WorkspacePrefs =
-        serde_json::from_value(json!({"saved": [{"name": "Historical Effects", "layout": legacy}], "current": "Historical Effects"})).unwrap();
-    assert_eq!(dock::saved_docking(&prefs, "Historical Effects").root, expected);
+        serde_json::from_value(json!({"saved": [{"name": "Historical Effects", "layout": legacy(&legacy_tree)}], "current": "Historical Effects"})).unwrap();
+    assert_eq!(dock::saved_docking(&prefs, "Historical Effects"), expected);
+}
+
+/// The frame tree as FilmCraft wrote it before its workspaces were craft-ui workspaces.
+fn legacy(node: &Node<PanelKind>) -> serde_json::Value {
+    match node {
+        Node::Tabs { panels, active } => json!({"Tabs": {"panels": panels, "active": active}}),
+        Node::Split { axis, size, first, second } => json!({"Split": {
+            "vertical": *axis == SplitAxis::Vertical,
+            "size": match size {
+                SplitSize::Ratio(v) => json!({"Ratio": v}),
+                SplitSize::FixedFirst(v) => json!({"FixedA": v}),
+                SplitSize::FixedSecond(v) => json!({"FixedB": v}),
+            },
+            "a": legacy(first),
+            "b": legacy(second),
+        }}),
+        _ => unreachable!(),
+    }
 }
 
 fn step(h: &mut Harness<'_, FilmcraftApp>) {
@@ -159,12 +199,7 @@ fn real_panel_drag_merges_splits_floats_and_redocks_without_editing_documents() 
     for _ in 0..4 {
         step(&mut h);
     }
-    h.state_mut().ui.dock = DockNode::Split {
-        vertical: true,
-        size: SplitSize::Ratio(0.62),
-        a: Box::new(layout().root),
-        b: Box::new(DockNode::Tabs { panels: vec![PanelKind::Timeline], active: 0 }),
-    };
+    h.state_mut().ui.dock = root(split(true, SplitSize::Ratio(0.62), layout().root.unwrap(), tabs(&[PanelKind::Timeline], 0)));
     for _ in 0..3 {
         step(&mut h);
     }
@@ -197,26 +232,28 @@ fn real_panel_drag_merges_splits_floats_and_redocks_without_editing_documents() 
     assert!(h.state().auto.find("program.transport.playhead.stepForward").is_some());
     let from = rect(&h, "panel.tab.Info").center();
     drag(&mut h, from, pos2(700.0, 400.0), Modifiers::COMMAND);
-    assert_eq!(h.state().ui.floating.len(), 1);
-    assert_eq!(h.get_by_label("Resize floating panel").accesskit_node().role(), egui::accesskit::Role::Button);
+    assert_eq!(h.state().ui.dock.floating.len(), 1);
+    assert_eq!(h.query_all_by_label("Resize panel window").next().unwrap().accesskit_node().role(), egui::accesskit::Role::Button);
     action_log.push(action_state(&h, "floated"));
-    let original = h.state().ui.floating[0].rect;
+    let original = h.state().ui.dock.floating[0].rect;
     let grip = rect(&h, "panel.float.0.resize").center();
     drag(&mut h, grip, grip + vec2(36.0, 24.0), Modifiers::NONE);
-    assert!(h.state().ui.floating[0].rect[2] > original[2] + 25.0);
-    assert!(h.state().ui.floating[0].rect[3] > original[3] + 15.0);
+    assert!(h.state().ui.dock.floating[0].rect[2] > original[2] + 25.0);
+    assert!(h.state().ui.dock.floating[0].rect[3] > original[3] + 15.0);
     action_log.push(action_state(&h, "resized"));
-    let grip_id = egui::Id::new(("floating-panel", PanelKind::Info.id())).with("resize");
+    let grip_id = egui::Id::new("filmcraft-docking").with(("floating", PanelKind::Info)).with("resize");
+    h.ctx.memory_mut(|memory| memory.request_focus(grip_id));
+    step(&mut h);
     assert_eq!(h.ctx.memory(|memory| memory.focused()), Some(grip_id));
-    let before_keys = h.state().ui.floating[0].rect;
+    let before_keys = h.state().ui.dock.floating[0].rect;
     for key in [egui::Key::ArrowRight, egui::Key::ArrowDown] {
         for pressed in [true, false] {
             h.event(Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
             step(&mut h);
         }
     }
-    assert_eq!(h.state().ui.floating[0].rect[2], before_keys[2] + 8.0);
-    assert_eq!(h.state().ui.floating[0].rect[3], before_keys[3] + 8.0);
+    assert_eq!(h.state().ui.dock.floating[0].rect[2], before_keys[2] + 8.0);
+    assert_eq!(h.state().ui.dock.floating[0].rect[3], before_keys[3] + 8.0);
     h.event(Event::Key { key: egui::Key::Tab, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
     step(&mut h);
     h.event(Event::Key { key: egui::Key::Tab, physical_key: None, pressed: false, repeat: false, modifiers: Modifiers::NONE });
@@ -225,29 +262,31 @@ fn real_panel_drag_merges_splits_floats_and_redocks_without_editing_documents() 
     }
     assert_ne!(h.ctx.memory(|memory| memory.focused()), Some(grip_id));
     action_log.push(action_state(&h, "keyboard-resized"));
-    let resized = h.state().ui.floating[0].rect;
+    let resized = h.state().ui.dock.floating[0].rect;
     let header = rect(&h, "panel.float.0.move");
     let from = pos2(header.right() - 24.0, header.center().y);
     drag(&mut h, from, from - vec2(24.0, 18.0), Modifiers::NONE);
-    assert!(h.state().ui.floating[0].rect[0] < resized[0] - 15.0);
-    assert!(h.state().ui.floating[0].rect[1] < resized[1] - 10.0);
+    assert!(h.state().ui.dock.floating[0].rect[0] < resized[0] - 15.0);
+    assert!(h.state().ui.dock.floating[0].rect[1] < resized[1] - 10.0);
     action_log.push(action_state(&h, "moved"));
     let saved_root = h.state().ui.dock.clone();
-    let saved_floating = h.state().ui.floating.clone();
+    let saved_floating = h.state().ui.dock.floating.clone();
     let ctx = h.ctx.clone();
+    // Maximize Frame fills the area with a docked frame
+    h.state_mut().ui.focused = PanelKind::Program;
     menus::invoke(h.state_mut(), &ctx, "window.maximizeFrame", json!({})).unwrap();
     for _ in 0..3 {
         step(&mut h);
     }
-    assert!(rect(&h, "panel.Info").width() > 1000.0);
+    assert!(rect(&h, "panel.Program").width() > 1000.0);
     action_log.push(action_state(&h, "maximized"));
     assert_eq!(h.state().ui.dock, saved_root);
-    assert_eq!(h.state().ui.floating, saved_floating);
+    assert_eq!(h.state().ui.dock.floating, saved_floating);
     menus::invoke(h.state_mut(), &ctx, "window.maximizeFrame", json!({})).unwrap();
     for _ in 0..3 {
         step(&mut h);
     }
-    assert_eq!(h.state().ui.floating, saved_floating);
+    assert_eq!(h.state().ui.dock.floating, saved_floating);
 
     if let Some(directory) = &snapshots {
         std::fs::create_dir_all(directory).unwrap();
@@ -256,7 +295,7 @@ fn real_panel_drag_merges_splits_floats_and_redocks_without_editing_documents() 
     let from = rect(&h, "panel.tab.Info").center();
     let to = rect(&h, "panel.History").center();
     drag(&mut h, from, to, Modifiers::NONE);
-    assert!(h.state().ui.floating.is_empty());
+    assert!(h.state().ui.dock.floating.is_empty());
     action_log.push(action_state(&h, "redocked"));
     assert!(std::sync::Arc::ptr_eq(&project, &h.state().session.project));
     assert_eq!(playheads, h.state().session.state.playheads);
@@ -278,7 +317,7 @@ fn real_panel_drag_merges_splits_floats_and_redocks_without_editing_documents() 
 #[test]
 fn dropping_on_the_window_edge_docks_beside_the_whole_workspace() {
     let mut app = FilmcraftApp::new(Session::default());
-    app.ui.dock = layout().root;
+    app.ui.dock = layout();
     let mut h = Harness::builder().with_size(vec2(1200.0, 760.0)).build_eframe(move |_| app);
     for _ in 0..4 {
         step(&mut h);
@@ -289,60 +328,59 @@ fn dropping_on_the_window_edge_docks_beside_the_whole_workspace() {
     drag(&mut h, from, pos2(leftmost.left() + 2.0, leftmost.center().y), Modifiers::NONE);
     assert_eq!(
         h.state().ui.dock,
-        DockNode::Split {
-            vertical: false,
-            size: SplitSize::Ratio(0.25),
-            a: Box::new(DockNode::Tabs { panels: vec![PanelKind::Info], active: 0 }),
-            b: Box::new(DockNode::Split {
-                vertical: false,
-                size: SplitSize::FixedA(400.0),
-                a: Box::new(DockNode::Tabs { panels: vec![PanelKind::Project, PanelKind::History], active: 1 }),
-                b: Box::new(DockNode::Tabs { panels: vec![PanelKind::Source, PanelKind::Program], active: 1 }),
-            }),
-        }
+        root(split(
+            false,
+            SplitSize::Ratio(0.25),
+            tabs(&[PanelKind::Info], 0),
+            split(false, SplitSize::FixedFirst(400.0), tabs(&[PanelKind::Project, PanelKind::History], 1), tabs(&[PanelKind::Source, PanelKind::Program], 1)),
+        ))
     );
 }
 
 #[test]
 fn dock_panel_without_anchor_docks_along_a_workspace_edge() {
     let mut app = FilmcraftApp::new(Session::default());
-    app.ui.dock = layout().root;
+    app.ui.dock = layout();
     let ctx = egui::Context::default();
     menus::invoke(&mut app, &ctx, "window.dockPanel", json!({"panel": "Program", "zone": "bottom"})).unwrap();
-    let DockNode::Split { vertical: true, size: SplitSize::Ratio(ratio), a, b } = &app.ui.dock else { panic!("root not split: {:?}", app.ui.dock) };
+    let Some(Node::Split { axis: SplitAxis::Vertical, size: SplitSize::Ratio(ratio), first, second }) = &app.ui.dock.root else {
+        panic!("root not split: {:?}", app.ui.dock)
+    };
     assert_eq!(*ratio, 0.75);
-    assert_eq!(**b, DockNode::Tabs { panels: vec![PanelKind::Program], active: 0 });
-    assert!(!a.contains(PanelKind::Program) && a.contains(PanelKind::Source) && a.contains(PanelKind::Info));
+    assert_eq!(**second, tabs(&[PanelKind::Program], 0));
+    let a = root((**first).clone());
+    assert!(!a.contains(&PanelKind::Program) && a.contains(&PanelKind::Source) && a.contains(&PanelKind::Info));
+    // without an anchor or a side, a docked panel stays where it is
     let before = app.ui.dock.clone();
-    assert!(menus::invoke(&mut app, &ctx, "window.dockPanel", json!({"panel": "Info", "zone": "center"})).is_err());
+    let _ = menus::invoke(&mut app, &ctx, "window.dockPanel", json!({"panel": "Info", "zone": "center"}));
     assert_eq!(app.ui.dock, before);
-    app.ui.dock = DockNode::Tabs { panels: vec![PanelKind::Project], active: 0 };
+    app.ui.dock = root(tabs(&[PanelKind::Project], 0));
     assert!(menus::invoke(&mut app, &ctx, "window.dockPanel", json!({"panel": "Project", "zone": "left"})).is_err());
-    assert_eq!(app.ui.dock, DockNode::Tabs { panels: vec![PanelKind::Project], active: 0 });
+    assert_eq!(app.ui.dock, root(tabs(&[PanelKind::Project], 0)));
 }
 
-fn same_group(root: &DockNode, first: PanelKind, second: PanelKind) -> bool {
-    match root {
-        DockNode::Tabs { panels, .. } => panels.contains(&first) && panels.contains(&second),
-        DockNode::Split { a, b, .. } => same_group(a, first, second) || same_group(b, first, second),
-    }
+fn same_group(layout: &Layout, first: PanelKind, second: PanelKind) -> bool {
+    tabs_containing(layout, first).contains(&second)
 }
 
-fn tabs_containing(root: &DockNode, panel: PanelKind) -> Vec<PanelKind> {
-    match root {
-        DockNode::Tabs { panels, .. } if panels.contains(&panel) => panels.clone(),
-        DockNode::Split { a, b, .. } => {
-            let first = tabs_containing(a, panel);
-            if first.is_empty() { tabs_containing(b, panel) } else { first }
+fn tabs_containing(layout: &Layout, panel: PanelKind) -> Vec<PanelKind> {
+    fn find(node: &Node<PanelKind>, panel: PanelKind) -> Vec<PanelKind> {
+        match node {
+            Node::Tabs { panels, .. } if panels.contains(&panel) => panels.clone(),
+            Node::Split { first, second, .. } => {
+                let found = find(first, panel);
+                if found.is_empty() { find(second, panel) } else { found }
+            }
+            _ => vec![],
         }
-        _ => vec![],
     }
+    layout.root.as_ref().map(|node| find(node, panel)).unwrap_or_default()
 }
 
 #[test]
 fn docking_commands_reject_bad_geometry_and_targets_without_partial_changes() {
     let mut app = FilmcraftApp::new(Session::default());
-    app.ui.dock = layout().root;
+    app.ui.dock = layout();
     let ctx = egui::Context::default();
     let before = app.ui.dock.clone();
     for (id, params) in [
@@ -355,25 +393,20 @@ fn docking_commands_reject_bad_geometry_and_targets_without_partial_changes() {
     ] {
         assert!(menus::invoke(&mut app, &ctx, id, params.clone()).is_err(), "{id} accepted {params}");
         assert_eq!(app.ui.dock, before);
-        assert!(app.ui.floating.is_empty());
+        assert!(app.ui.dock.floating.is_empty());
     }
-    app.ui.dock = DockNode::Tabs { panels: vec![PanelKind::Project], active: 0 };
+    app.ui.dock = root(tabs(&[PanelKind::Project], 0));
     assert!(menus::invoke(&mut app, &ctx, "window.floatPanel", json!({"panel": "Project", "rect": [1, 2, 300, 200]})).is_err());
 }
 
 fn action_state(h: &Harness<'_, FilmcraftApp>, action: &str) -> serde_json::Value {
-    json!({"action": action, "dock": h.state().ui.dock, "floating": h.state().ui.floating, "focused": h.state().ui.focused})
+    json!({"action": action, "dock": h.state().ui.dock, "floating": h.state().ui.dock.floating, "focused": h.state().ui.focused})
 }
 
 #[test]
 fn catalog_docking_action_supports_resize_reorder_and_floating_geometry() {
     let mut app = FilmcraftApp::new(Session::default());
-    app.ui.dock = DockNode::Split {
-        vertical: false,
-        size: SplitSize::FixedA(300.0),
-        a: Box::new(DockNode::Tabs { panels: vec![PanelKind::Project, PanelKind::Info], active: 1 }),
-        b: Box::new(DockNode::Tabs { panels: vec![PanelKind::Program], active: 0 }),
-    };
+    app.ui.dock = root(split(false, SplitSize::FixedFirst(300.0), tabs(&[PanelKind::Project, PanelKind::Info], 1), tabs(&[PanelKind::Program], 0)));
     let ctx = egui::Context::default();
     for action in [
         Action::ResizeSplit { path: vec![], size: craft_ui::layout::SplitSize::FixedFirst(360.0) },
@@ -383,10 +416,10 @@ fn catalog_docking_action_supports_resize_reorder_and_floating_geometry() {
     ] {
         filmcraft_ui_egui::menus::invoke(&mut app, &ctx, "window.dockAction", json!({"action": action})).unwrap();
     }
-    assert_eq!(app.ui.floating[0].rect, [45.0, 65.0, 330.0, 240.0]);
-    let DockNode::Split { size, .. } = &app.ui.dock else { panic!("split lost") };
-    assert_eq!(*size, SplitSize::FixedA(360.0));
-    let before = json!({"dock": app.ui.dock, "floating": app.ui.floating});
+    assert_eq!(app.ui.dock.floating[0].rect, [45.0, 65.0, 330.0, 240.0]);
+    let Some(Node::Split { size, .. }) = &app.ui.dock.root else { panic!("split lost") };
+    assert_eq!(*size, SplitSize::FixedFirst(360.0));
+    let before = json!({"dock": app.ui.dock, "floating": app.ui.dock.floating});
     assert!(
         filmcraft_ui_egui::menus::invoke(
             &mut app,
@@ -398,13 +431,13 @@ fn catalog_docking_action_supports_resize_reorder_and_floating_geometry() {
         )
         .is_err()
     );
-    assert_eq!(json!({"dock": app.ui.dock, "floating": app.ui.floating}), before);
+    assert_eq!(json!({"dock": app.ui.dock, "floating": app.ui.dock.floating}), before);
 }
 
 #[test]
 fn unreadable_floating_workspace_does_not_erase_valid_workspaces_or_current_name() {
-    let root = DockNode::Tabs { panels: vec![PanelKind::Project], active: 0 };
-    let valid = json!({"name": "Valid", "layout": root, "floating": [{
+    let tree = json!({"Tabs": {"panels": ["Project"], "active": 0}});
+    let valid = json!({"name": "Valid", "layout": tree, "floating": [{
         "panels": ["TextToSpeech", "Timeline"], "active": 0, "rect": [80, 90, 420, 320]
     }]});
     for (index, bad) in [
@@ -416,16 +449,16 @@ fn unreadable_floating_workspace_does_not_erase_valid_workspaces_or_current_name
     .enumerate()
     {
         let path = std::env::temp_dir().join(format!("filmcraft-floating-isolation-{}-{index}.json", std::process::id()));
-        let prefs = json!({"saved": [valid.clone(), {"name": "Broken", "layout": root, "floating": bad}], "current": "Valid"});
+        let prefs = json!({"saved": [valid.clone(), {"name": "Broken", "layout": tree, "floating": bad}], "current": "Valid"});
         std::fs::write(&path, serde_json::to_vec(&prefs).unwrap()).unwrap();
         let loaded = dock::WorkspacePrefs::load(&path);
         assert_eq!(loaded.current, "Valid");
         assert_eq!(loaded.saved.len(), 2);
         let restored = dock::saved_docking(&loaded, "Valid");
         restored.validate().unwrap();
-        assert_eq!(restored.root, root);
-        assert_eq!(restored.floating[0].panels, vec![PanelKind::TextToSpeech, PanelKind::Timeline]);
-        assert_eq!(dock::saved_docking(&loaded, "Broken").root, dock::workspace("Broken"));
+        assert_eq!(restored.root, Some(tabs(&[PanelKind::Project], 0)));
+        assert_eq!(restored.floating[0].panels().copied().collect::<Vec<_>>(), vec![PanelKind::TextToSpeech, PanelKind::Timeline]);
+        assert_eq!(dock::saved_docking(&loaded, "Broken"), dock::workspace("Broken"));
         loaded.save(&path).unwrap();
         assert_eq!(dock::WorkspacePrefs::load(&path), loaded, "saving preserves the unreadable entry for a future version");
         std::fs::remove_file(path).unwrap();
@@ -455,10 +488,10 @@ fn floating_tts_and_timeline_reveal_keeps_one_owner_and_draft_without_project_ed
     .unwrap();
     app.show_panel(PanelKind::TextToSpeech);
     app.show_panel(PanelKind::Timeline);
-    assert!(!app.ui.dock.contains(PanelKind::TextToSpeech));
-    assert!(!app.ui.dock.contains(PanelKind::Timeline));
-    assert_eq!(app.ui.floating.iter().flat_map(|group| &group.panels).filter(|panel| **panel == PanelKind::TextToSpeech).count(), 1);
-    assert_eq!(app.ui.floating.iter().flat_map(|group| &group.panels).filter(|panel| **panel == PanelKind::Timeline).count(), 1);
+    assert!(!app.ui.dock.docked(PanelKind::TextToSpeech));
+    assert!(!app.ui.dock.docked(PanelKind::Timeline));
+    assert_eq!(app.ui.dock.floating.iter().flat_map(|group| group.panels()).filter(|panel| **panel == PanelKind::TextToSpeech).count(), 1);
+    assert_eq!(app.ui.dock.floating.iter().flat_map(|group| group.panels()).filter(|panel| **panel == PanelKind::Timeline).count(), 1);
     assert_eq!(serde_json::to_value(&app.ui.tts).unwrap(), draft);
     assert!(std::sync::Arc::ptr_eq(&project, &app.session.project));
     assert_eq!(serde_json::to_value(&app.session.state).unwrap(), state);
@@ -502,7 +535,7 @@ fn narration_selection_reveals_covered_floating_tts_once_without_editing_the_pro
             step(&mut h);
         }
     }
-    let layer = |panel: PanelKind| egui::LayerId::new(egui::Order::Middle, egui::Id::new(("floating-panel", panel.id())));
+    let layer = |panel: PanelKind| egui::LayerId::new(egui::Order::Middle, egui::Id::new("filmcraft-docking").with(("floating", panel)));
     let covered = rect(&h, "panel.TextToSpeech").center();
     assert!(rect(&h, "panel.Info").contains(covered));
     ctx.move_to_top(layer(PanelKind::Info));
@@ -520,8 +553,8 @@ fn narration_selection_reveals_covered_floating_tts_once_without_editing_the_pro
     assert_eq!(draft.loaded_from, Some((clip.id.0, clip.item.0)));
     assert_eq!(ctx.layer_id_at(covered), Some(layer(PanelKind::TextToSpeech)), "narration selection must bring its floating editor forward");
     assert_eq!(h.state().ui.focused, PanelKind::TextToSpeech);
-    assert!(!h.state().ui.dock.contains(PanelKind::TextToSpeech));
-    assert_eq!(h.state().ui.floating.iter().flat_map(|group| &group.panels).filter(|panel| **panel == PanelKind::TextToSpeech).count(), 1);
+    assert!(!h.state().ui.dock.docked(PanelKind::TextToSpeech));
+    assert_eq!(h.state().ui.dock.floating.iter().flat_map(|group| group.panels()).filter(|panel| **panel == PanelKind::TextToSpeech).count(), 1);
     assert!(std::sync::Arc::ptr_eq(&project, &h.state().session.project));
     // A reveal is one-shot: drawing the selected narration must not steal stacking
     // from another pane that the user subsequently brings forward.
@@ -546,8 +579,8 @@ fn narration_selection_reveals_covered_floating_tts_once_without_editing_the_pro
     }
     let saved = dock::SavedWorkspace {
         name: "Reveal cancellation".into(),
-        layout: serde_json::to_value(&h.state().ui.dock).unwrap(),
-        floating: serde_json::to_value(&h.state().ui.floating).unwrap(),
+        workspace: serde_json::to_value(dock::Workspace::new(h.state().ui.dock.clone())).unwrap(),
+        ..Default::default()
     };
     h.state_mut().workspaces.saved.push(saved);
     h.state_mut().show_panel(PanelKind::TextToSpeech);
@@ -567,46 +600,63 @@ fn a_panel_closed_while_floating_reopens_floating_where_it_was() {
     let mut app = FilmcraftApp::new(Session::default());
     let ctx = egui::Context::default();
     menus::invoke(&mut app, &ctx, "window.floatPanel", json!({"panel": "Info", "rect": [45, 65, 420, 320]})).unwrap();
-    let rect = app.ui.floating.iter().find(|g| g.panels.contains(&PanelKind::Info)).unwrap().rect;
+    let rect = app.ui.dock.floating.iter().find(|g| g.contains(&PanelKind::Info)).unwrap().rect;
     menus::invoke(&mut app, &ctx, "window.closePanel", json!({"panel": "Info"})).unwrap();
-    assert!(!app.ui.dock.contains(PanelKind::Info) && !app.ui.floating.iter().any(|g| g.panels.contains(&PanelKind::Info)));
+    assert!(!app.ui.dock.docked(PanelKind::Info) && !app.ui.dock.floating.iter().any(|g| g.contains(&PanelKind::Info)));
     menus::invoke(&mut app, &ctx, &menus::panel_command_id(PanelKind::Info), json!({})).unwrap();
-    let back = app.ui.floating.iter().find(|g| g.panels.contains(&PanelKind::Info)).expect("Info floats again");
+    let back = app.ui.dock.floating.iter().find(|g| g.contains(&PanelKind::Info)).expect("Info floats again");
     assert_eq!(back.rect, rect, "where it was");
-    assert!(!app.ui.dock.contains(PanelKind::Info));
+    assert!(!app.ui.dock.docked(PanelKind::Info));
     // docked, then closed: it opens docked
     menus::invoke(&mut app, &ctx, "window.dockPanel", json!({"panel": "Info", "anchor": "Project"})).unwrap();
     menus::invoke(&mut app, &ctx, "window.closePanel", json!({"panel": "Info"})).unwrap();
     menus::invoke(&mut app, &ctx, &menus::panel_command_id(PanelKind::Info), json!({})).unwrap();
-    assert!(app.ui.dock.contains(PanelKind::Info));
-    assert!(!app.ui.floating.iter().any(|g| g.panels.contains(&PanelKind::Info)));
+    assert!(app.ui.dock.docked(PanelKind::Info));
+    assert!(!app.ui.dock.floating.iter().any(|g| g.contains(&PanelKind::Info)));
     // the Timeline too, though reopening it first puts it back in its own place in the dock
     menus::invoke(&mut app, &ctx, "window.floatPanel", json!({"panel": "Timeline", "rect": [60, 80, 700, 300]})).unwrap();
-    let rect = app.ui.floating.iter().find(|g| g.panels.contains(&PanelKind::Timeline)).unwrap().rect;
+    let rect = app.ui.dock.floating.iter().find(|g| g.contains(&PanelKind::Timeline)).unwrap().rect;
     menus::invoke(&mut app, &ctx, "window.closePanel", json!({"panel": "Timeline"})).unwrap();
     menus::invoke(&mut app, &ctx, &menus::panel_command_id(PanelKind::Timeline), json!({})).unwrap();
-    let back = app.ui.floating.iter().find(|g| g.panels.contains(&PanelKind::Timeline)).expect("the Timeline floats again");
+    let back = app.ui.dock.floating.iter().find(|g| g.contains(&PanelKind::Timeline)).expect("the Timeline floats again");
     assert_eq!(back.rect, rect);
-    assert!(!app.ui.dock.contains(PanelKind::Timeline));
+    assert!(!app.ui.dock.docked(PanelKind::Timeline));
 
     // with nothing else docked, a reopened panel has to stay docked (the workspace keeps one
     // docked panel); its floating place is kept, not lost (#2482 review)
     let mut app = FilmcraftApp::new(Session::default());
     menus::invoke(&mut app, &ctx, "window.floatPanel", json!({"panel": "Info", "rect": [45, 65, 420, 320]})).unwrap();
-    let rect = app.ui.floating.iter().find(|g| g.panels.contains(&PanelKind::Info)).unwrap().rect;
+    let rect = app.ui.dock.floating.iter().find(|g| g.contains(&PanelKind::Info)).unwrap().rect;
     for _ in 0..64 {
-        let Some(p) = PanelKind::ALL.iter().copied().find(|p| app.ui.dock.contains(*p)) else { break };
+        let Some(p) = PanelKind::ALL.iter().copied().find(|p| app.ui.dock.docked(*p)) else { break };
         if menus::invoke(&mut app, &ctx, "window.closePanel", json!({"panel": p.id()})).is_err() {
             break;
         }
     }
-    let docked = PanelKind::ALL.iter().filter(|p| app.ui.dock.contains(**p)).count();
+    let docked = PanelKind::ALL.iter().filter(|p| app.ui.dock.docked(**p)).count();
     if docked > 0 {
         eprintln!("SKIPPED: the dock cannot be emptied ({docked} panels stay)");
         return;
     }
     menus::invoke(&mut app, &ctx, "window.closePanel", json!({"panel": "Info"})).unwrap();
     menus::invoke(&mut app, &ctx, &menus::panel_command_id(PanelKind::Info), json!({})).unwrap();
-    assert!(app.ui.dock.contains(PanelKind::Info), "the only panel stays docked");
+    assert!(app.ui.dock.docked(PanelKind::Info), "the only panel stays docked");
     assert!(app.ui.closed_floating.iter().any(|(p, r)| *p == PanelKind::Info && *r == rect), "{:?}", app.ui.closed_floating);
+}
+
+/// craft-ui's `window.panel.*` commands and FilmCraft's own docking commands share one path.
+#[test]
+fn shared_dock_commands_and_filmcraft_names_move_panels() {
+    let mut app = FilmcraftApp::new(Session::default());
+    app.ui.dock = layout();
+    let ctx = egui::Context::default();
+    menus::invoke(&mut app, &ctx, "window.panel.move", json!({"panel": "Info", "anchor": "Program", "zone": "right"})).unwrap();
+    assert!(app.ui.dock.is_visible(PanelKind::Info) && !same_group(&app.ui.dock, PanelKind::Info, PanelKind::Program));
+    menus::invoke(&mut app, &ctx, "window.dockPanel", json!({"panel": "Info", "anchor": "Program", "before": "Source"})).unwrap();
+    assert_eq!(tabs_containing(&app.ui.dock, PanelKind::Info), vec![PanelKind::Info, PanelKind::Source, PanelKind::Program]);
+    menus::invoke(&mut app, &ctx, "window.floatPanel", json!({"panel": "Info"})).unwrap();
+    assert!(app.ui.dock.floating.iter().any(|window| window.contains(&PanelKind::Info)));
+    menus::invoke(&mut app, &ctx, "window.panel.close", json!({"panel": "Info"})).unwrap();
+    assert!(!app.ui.dock.contains(&PanelKind::Info));
+    assert!(menus::invoke(&mut app, &ctx, "window.panel.move", json!({"panel": "Info", "anchor": "Nowhere"})).is_err());
 }

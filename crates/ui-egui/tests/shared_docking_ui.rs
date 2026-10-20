@@ -717,3 +717,16 @@ fn tools_and_meters_move_by_their_grips() {
     drag(&mut h, from, to, Modifiers::NONE);
     assert!(same_group(&h.state().ui.dock, PanelKind::Tools, PanelKind::Program), "{:?}", h.state().ui.dock);
 }
+
+/// A panel floated by command without a rect takes a useful height, not the 120 pt minimum.
+#[test]
+fn program_floats_at_a_useful_height() {
+    let mut h = demo_harness();
+    let ctx = h.ctx.clone();
+    menus::invoke(h.state_mut(), &ctx, "window.panel.float", json!({"panel": "Program"})).unwrap();
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let window = h.state().ui.dock.floating.iter().find(|window| window.contains(&PanelKind::Program)).unwrap();
+    assert!(window.rect[3] >= 300.0, "Program floated at {:?}", window.rect);
+}

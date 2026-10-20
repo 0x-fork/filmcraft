@@ -745,3 +745,15 @@ fn a_floating_panel_does_not_maximize() {
     menus::invoke(&mut app, &ctx, "window.maximizeFrame", json!({})).unwrap();
     assert_eq!(app.ui.keys.maximized, Some(PanelKind::Program));
 }
+
+/// A closed panel reopens through `window.panel.activate`.
+#[test]
+fn activate_reopens_a_closed_panel() {
+    let mut app = FilmcraftApp::new(Session::default());
+    app.ui.dock = layout();
+    let ctx = egui::Context::default();
+    menus::invoke(&mut app, &ctx, "window.panel.close", json!({"panel": "Info"})).unwrap();
+    assert!(!app.ui.dock.contains(&PanelKind::Info));
+    menus::invoke(&mut app, &ctx, "window.panel.activate", json!({"panel": "Info"})).unwrap();
+    assert!(app.ui.dock.is_visible(PanelKind::Info));
+}

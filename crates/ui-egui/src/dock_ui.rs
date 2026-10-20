@@ -119,6 +119,14 @@ impl FilmcraftApp {
         if command.is_app_owned() {
             return Err("use the window.workspace.* commands for workspaces".into());
         }
+        // A closed panel reopens through FilmCraft's own path: where it was, floating again if it
+        // was closed floating (#1985).
+        if let DockCommand::Activate { panel } = &command
+            && !self.ui.dock.contains(panel)
+        {
+            self.show_panel(*panel);
+            return Ok(());
+        }
         let space = craft_ui::docking::float_space(ctx, area_id()).unwrap_or_else(|| FloatSpace::new(ctx.content_rect()));
         let actions = command.to_actions(&Workspace::new(self.ui.dock.clone()), false, &space).map_err(|error| error.to_string())?;
         self.apply_dock_all(actions)

@@ -173,7 +173,11 @@ impl FilmcraftApp {
         let rank = |layer: &egui::LayerId| layers.iter().position(|other| other == layer);
         !self.ui.dock.floating.iter().any(|window| {
             let Some(layer) = DockArea::floating_layer(area_id(), window) else { return false };
-            layer != *timeline && rank(&layer) > rank(timeline) && ctx.memory(|memory| memory.area_rect(layer.id)).is_some_and(|rect| rect.contains(pos))
+            // Floating windows are hidden while a frame is maximized.
+            ctx.memory(|memory| memory.areas().is_visible(&layer))
+                && layer != *timeline
+                && rank(&layer) > rank(timeline)
+                && ctx.memory(|memory| memory.area_rect(layer.id)).is_some_and(|rect| rect.contains(pos))
         })
     }
 

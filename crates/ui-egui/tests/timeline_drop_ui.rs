@@ -327,3 +327,21 @@ fn os_cursor_hook_selects_destination_when_egui_pointer_has_no_motion() {
     step(&mut h);
     assert_eq!(clip_counts(&h), (1, 0));
 }
+
+#[test]
+fn a_floating_window_hidden_by_a_maximized_timeline_does_not_block_drops() {
+    let mut h = harness();
+    h.state_mut().ui.keys.maximized = Some(filmcraft_ui_egui::dock::PanelKind::Timeline);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    let at = point_on_row(&h, "timeline.track.V1.target");
+    // Floating a panel restores the frames; maximize again so the window over `at` is hidden.
+    float_panel(&mut h, "Info", [at.x - 20.0, at.y - 60.0, 320.0, 200.0]);
+    h.state_mut().ui.keys.maximized = Some(filmcraft_ui_egui::dock::PanelKind::Timeline);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert_eq!(point_on_row(&h, "timeline.track.V1.target"), at);
+    assert!(hover_at(&mut h, at));
+}

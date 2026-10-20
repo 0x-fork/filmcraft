@@ -447,6 +447,8 @@ fn workspace_root(name: &str) -> Node<PanelKind> {
 pub trait LayoutExt {
     /// Whether `panel` is the shown tab of its frame or floating window.
     fn is_visible(&self, panel: PanelKind) -> bool;
+    /// Whether `panel` is in the frame tree, not a floating window.
+    fn is_docked(&self, panel: PanelKind) -> bool;
     /// The shown panel of each frame in layout order, then of each floating window.
     fn visible_panels(&self) -> Vec<PanelKind>;
     /// Put the Timeline panel back where the workspaces keep it (left of the audio meters) after
@@ -459,6 +461,10 @@ pub trait LayoutExt {
 impl LayoutExt for Layout {
     fn is_visible(&self, panel: PanelKind) -> bool {
         self.panel_state(&panel) == craft_ui::docking::PanelState::Front
+    }
+
+    fn is_docked(&self, panel: PanelKind) -> bool {
+        Layout { root: self.root.clone(), floating: vec![] }.contains(&panel)
     }
 
     fn visible_panels(&self) -> Vec<PanelKind> {

@@ -730,3 +730,18 @@ fn program_floats_at_a_useful_height() {
     let window = h.state().ui.dock.floating.iter().find(|window| window.contains(&PanelKind::Program)).unwrap();
     assert!(window.rect[3] >= 300.0, "Program floated at {:?}", window.rect);
 }
+
+/// Only docked frames maximize: Maximize Frame on a floating panel leaves nothing maximized.
+#[test]
+fn a_floating_panel_does_not_maximize() {
+    let mut app = FilmcraftApp::new(Session::default());
+    app.ui.dock = layout();
+    let ctx = egui::Context::default();
+    menus::invoke(&mut app, &ctx, "window.floatPanel", json!({"panel": "Info", "rect": [45, 65, 420, 320]})).unwrap();
+    app.ui.focused = PanelKind::Info;
+    menus::invoke(&mut app, &ctx, "window.maximizeFrame", json!({})).unwrap();
+    assert_eq!(app.ui.keys.maximized, None);
+    app.ui.focused = PanelKind::Program;
+    menus::invoke(&mut app, &ctx, "window.maximizeFrame", json!({})).unwrap();
+    assert_eq!(app.ui.keys.maximized, Some(PanelKind::Program));
+}

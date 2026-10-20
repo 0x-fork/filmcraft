@@ -7,7 +7,7 @@ use craft_ui::docking::{Action, Divider, DockArea, DockCommand, DockContent, Doc
 use egui::{Rect, Sense, Stroke, StrokeKind, vec2};
 use serde_json::{Value, json};
 
-use crate::dock::{self, PanelKind, SeqAction, SeqTabs};
+use crate::dock::{self, LayoutExt as _, PanelKind, SeqAction, SeqTabs};
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
 use crate::{FilmcraftApp, panels};
@@ -154,7 +154,7 @@ impl FilmcraftApp {
         if let Some(panel) = reveal {
             self.pending_panel_raise = Some(panel);
         }
-        if relocating || self.ui.keys.maximized.is_some_and(|panel| !self.ui.dock.contains(&panel)) {
+        if relocating || self.ui.keys.maximized.is_some_and(|panel| !self.ui.dock.is_docked(panel)) {
             self.ui.keys.maximized = None;
         }
         Ok(())
@@ -197,7 +197,7 @@ impl FilmcraftApp {
             active: self.session.state.active_sequence.map(|id| id.0),
         };
         let style = dock_style(ui, &t);
-        let mut area = DockArea::new(area_id()).maximized(self.ui.keys.maximized.filter(|panel| self.ui.dock.contains(panel)));
+        let mut area = DockArea::new(area_id()).maximized(self.ui.keys.maximized.filter(|panel| self.ui.dock.is_docked(*panel)));
         if let Some(panel) = self.pending_panel_raise.take() {
             area = area.raise_panel(panel);
         }

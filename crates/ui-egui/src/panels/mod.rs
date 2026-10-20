@@ -309,7 +309,7 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                         let _ = crate::menus::invoke(app, ui.ctx(), "window.floatPanel", serde_json::json!({"panel": p.id()}));
                         close = true;
                     }
-                    let maximized = app.ui.keys.maximized.is_some_and(|q| app.ui.dock.contains(&q));
+                    let maximized = app.ui.keys.maximized.is_some_and(|q| crate::dock::LayoutExt::is_docked(&app.ui.dock, q));
                     let r = ui.button(if maximized { tl!("Restore Frame") } else { tl!("Maximize Frame") });
                     app.auto.add(&format!("panel.menu.{}.maximize", p.id()), r.rect, if maximized { "Restore Frame" } else { "Maximize Frame" });
                     if r.clicked() {

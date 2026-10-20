@@ -704,3 +704,16 @@ fn the_last_docked_group_cannot_float_away() {
     menus::invoke(&mut app, &ctx, "window.panel.float", json!({"panel": "Info"})).unwrap();
     assert!(app.ui.dock.docked(PanelKind::Project) && !app.ui.dock.docked(PanelKind::Info));
 }
+
+/// Tools and the audio meters have no tab strip; the grip above each one moves it.
+#[test]
+fn tools_and_meters_move_by_their_grips() {
+    let mut h = demo_harness();
+    for panel in [PanelKind::Tools, PanelKind::AudioMeters] {
+        assert!(h.state().auto.find(&format!("panel.drag.{}", panel.id())).is_some(), "{panel:?} has no grip");
+    }
+    let from = rect(&h, "panel.drag.Tools").center();
+    let to = rect(&h, "panel.Program").center();
+    drag(&mut h, from, to, Modifiers::NONE);
+    assert!(same_group(&h.state().ui.dock, PanelKind::Tools, PanelKind::Program), "{:?}", h.state().ui.dock);
+}

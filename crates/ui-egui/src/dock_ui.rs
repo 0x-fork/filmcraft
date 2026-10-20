@@ -22,6 +22,8 @@ fn bodies_id() -> egui::Id {
     area_id().with("bodies")
 }
 
+/// Height of the move grip above a panel without a tab strip.
+const GRIP_H: f32 = 8.0;
 /// Width of the ≡ panel menu button at the end of each tab strip.
 const MENU_W: f32 = 26.0;
 
@@ -342,7 +344,21 @@ struct FilmContent<'a> {
 impl DockContent<PanelKind> for FilmContent<'_> {
     fn body(&mut self, ui: &mut egui::Ui, panel: &PanelKind) {
         let t = self.tokens;
-        let rect = ui.max_rect();
+        let frame = ui.max_rect();
+        let mut rect = frame;
+        // Tools and the audio meters have no tab strip: a slim grip on top moves them.
+        if panel.compact() {
+            let grip = Rect::from_min_size(rect.min, vec2(rect.width(), GRIP_H.min(rect.height())));
+            let response = ui.interact(grip, egui::Id::new(("panel-grip", panel.id())), Sense::drag()).on_hover_cursor(egui::CursorIcon::Grab);
+            self.app.auto.add_response(&format!("panel.drag.{}", panel.id()), &response, "Move panel");
+            for dx in [-4.0, 0.0, 4.0] {
+                ui.painter().circle_filled(grip.center() + vec2(dx, 0.0), 1.0, if response.hovered() { t.tab_text_active } else { t.text_faint });
+            }
+            if response.drag_started() {
+                craft_ui::docking::begin_drag(ui.ctx(), area_id(), *panel, frame);
+            }
+            rect.min.y = grip.max.y;
+        }
         self.bodies.push((*panel, rect, ui.layer_id()));
         self.app.auto.add(&format!("panel.{}", panel.id()), rect, panel.title());
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).id_salt(("panel", panel.id())));
@@ -350,7 +366,7 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         panels::show(self.app, &mut child, *panel, rect);
         // Painted after the body so child backgrounds cannot hide the focus outline (#1075).
         if self.app.ui.focused == *panel {
-            ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0, t.focus), StrokeKind::Inside);
+            ui.painter().rect_stroke(frame, 0.0, Stroke::new(1.0, t.focus), StrokeKind::Inside);
         }
     }
 

@@ -242,6 +242,10 @@ fn real_panel_drag_merges_splits_floats_and_redocks_without_editing_documents() 
     assert!(h.state().ui.dock.floating[0].rect[3] > original[3] + 15.0);
     action_log.push(action_state(&h, "resized"));
     let grip_id = DockArea::<PanelKind>::hit_id(filmcraft_ui_egui::dock_area_id(), &Hit::Resize(PanelKind::Info, ResizeEdge::BottomRight));
+    // A pointer drag leaves no focus on the grip; focused from the keyboard, it takes arrows.
+    assert_ne!(h.ctx.memory(|memory| memory.focused()), Some(grip_id));
+    h.ctx.memory_mut(|memory| memory.request_focus(grip_id));
+    step(&mut h);
     assert_eq!(h.ctx.memory(|memory| memory.focused()), Some(grip_id));
     let before_keys = h.state().ui.dock.floating[0].rect;
     for key in [egui::Key::ArrowRight, egui::Key::ArrowDown] {

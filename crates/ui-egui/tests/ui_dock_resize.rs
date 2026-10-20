@@ -139,8 +139,8 @@ fn space_plays_after_a_pane_is_resized_with_the_pointer() {
     h.event(Event::PointerButton { pos: from + vec2(20.0, 0.0), button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
     frames(&mut h, 3);
     assert_eq!(first_size(&h), 420.0);
-    // The divider keeps keyboard focus so arrows can nudge it; that must not cost the editor its shortcuts.
-    assert_eq!(
+    // A pointer drag leaves no keyboard focus on the divider, so the editor keeps its shortcuts.
+    assert_ne!(
         h.ctx.memory(|memory| memory.focused()),
         Some(craft_ui::docking::DockArea::<PanelKind>::hit_id(
             filmcraft_ui_egui::dock_area_id(),

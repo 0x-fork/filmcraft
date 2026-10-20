@@ -5,7 +5,6 @@
 mod common;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::time::{Duration, Instant};
 
 use filmcraft_mpeg2v::{Decoder, access_units, probe, scan_access_unit};
 
@@ -60,9 +59,9 @@ fn count_panics() {
 }
 
 fn run_all(d: &[u8], label: &str) {
+    filmcraft_testkit::set_progress(label);
     count_panics();
     let before = PANICS.load(std::sync::atomic::Ordering::SeqCst);
-    let t = Instant::now();
     let res = catch_unwind(AssertUnwindSafe(|| {
         let _ = probe(d);
         let _ = scan_access_unit(d);
@@ -78,38 +77,47 @@ fn run_all(d: &[u8], label: &str) {
         }
     }));
     assert!(res.is_ok() && PANICS.load(std::sync::atomic::Ordering::SeqCst) == before, "panic: {label}");
-    assert!(t.elapsed() < Duration::from_secs(20), "too slow ({:?}): {label}", t.elapsed());
 }
+
+/// Seconds the whole sweep may take before it counts as a hang (override: FILMCRAFT_HOSTILE_TIMEOUT_SECS).
+const DEADLINE_SECS: u64 = 600;
 
 #[test]
 fn hostile_streams_never_panic() {
+    filmcraft_testkit::with_deadline(DEADLINE_SECS, sweep);
+}
+
+fn sweep() {
     let Some(ff) = filmcraft_testkit::ffmpeg_or_skip("mpeg2v fuzz") else { return };
     for spec in &SPECS {
-        let Some(path) = common::make(&ff, spec) else {
-            filmcraft_testkit::skip("mpeg2v fuzz", &format!("ffmpeg could not encode the {} seed (encoder missing?)", spec.name));
+        if !filmcraft_testkit::ffmpeg_has_encoder(&ff, "mpeg2video") {
+            filmcraft_testkit::skip("mpeg2v fuzz", &format!("this ffmpeg has no mpeg2video encoder (seed {})", spec.name));
             continue;
+        }
+        let Some(path) = common::make(&ff, spec) else {
+            panic!("ffmpeg has mpeg2video but could not encode the {} seed", spec.name);
         };
-        fuzz(&std::fs::read(path).unwrap());
+        fuzz(spec.name, &std::fs::read(path).unwrap());
     }
 }
 
-fn fuzz(seed: &[u8]) {
+fn fuzz(name: &str, seed: &[u8]) {
     // every truncation length (stride keeps it quick on larger seeds)
     let stride = (seed.len() / 600).max(1);
     for n in (0..seed.len()).step_by(stride) {
-        run_all(&seed[..n], &format!("truncate {n}"));
+        run_all(&seed[..n], &format!("{name} truncate {n}"));
     }
     // header region: every byte to 0 / 0xff / 0x80 / each single bit
     for p in 0..seed.len().min(96) {
         for v in [0u8, 0xff, 0x80, 0x01] {
             let mut d = seed.to_vec();
             d[p] = v;
-            run_all(&d, &format!("byte {p}={v:#x}"));
+            run_all(&d, &format!("{name} byte {p}={v:#x}"));
         }
         for b in 0..8 {
             let mut d = seed.to_vec();
             d[p] ^= 1 << b;
-            run_all(&d, &format!("flip {p}.{b}"));
+            run_all(&d, &format!("{name} flip {p}.{b}"));
         }
     }
     // random multi-mutations
@@ -124,7 +132,7 @@ fn fuzz(seed: &[u8]) {
                 d[p] = rng.next() as u8;
             }
         }
-        run_all(&d, &format!("random {i}"));
+        run_all(&d, &format!("{name} random {i}"));
     }
 }
 

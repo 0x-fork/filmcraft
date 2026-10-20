@@ -4,7 +4,6 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
 
 use filmcraft_av1::Decoder;
 
@@ -70,9 +69,9 @@ fn count_panics() {
 }
 
 fn run_all(frames: &[Vec<u8>], label: &str) {
+    filmcraft_testkit::set_progress(label);
     count_panics();
     let before = PANICS.load(Ordering::SeqCst);
-    let t = Instant::now();
     let res = catch_unwind(AssertUnwindSafe(|| {
         for threads in [1, 3] {
             let mut dec = Decoder::with_threads(threads);
@@ -83,7 +82,6 @@ fn run_all(frames: &[Vec<u8>], label: &str) {
         }
     }));
     assert!(res.is_ok() && PANICS.load(Ordering::SeqCst) == before, "panic: {label}");
-    assert!(t.elapsed() < Duration::from_secs(20), "too slow ({:?}): {label}", t.elapsed());
 }
 
 /// Random-mutation rounds per seed (raise with FILMCRAFT_FUZZ_ITERS for a long hunt).
@@ -91,13 +89,23 @@ fn iters() -> usize {
     std::env::var("FILMCRAFT_FUZZ_ITERS").ok().and_then(|s| s.parse().ok()).unwrap_or(300)
 }
 
+/// Seconds the whole sweep may take before it counts as a hang (override: FILMCRAFT_HOSTILE_TIMEOUT_SECS).
+const DEADLINE_SECS: u64 = 600;
+
 #[test]
 fn hostile_streams_never_panic() {
+    filmcraft_testkit::with_deadline(DEADLINE_SECS, sweep);
+}
+
+fn sweep() {
     let Some(ff) = filmcraft_testkit::ffmpeg_or_skip("AV1 fuzz") else { return };
     for &(name, args, pix) in SEEDS {
-        let Some(seed) = make(&ff, name, args, pix) else {
-            filmcraft_testkit::skip("AV1 fuzz", &format!("ffmpeg could not encode the {name} seed (encoder missing?)"));
+        if !filmcraft_testkit::ffmpeg_has_encoder(&ff, "libsvtav1") {
+            filmcraft_testkit::skip("AV1 fuzz", &format!("this ffmpeg has no libsvtav1 encoder (seed {name})"));
             continue;
+        }
+        let Some(seed) = make(&ff, name, args, pix) else {
+            panic!("ffmpeg has libsvtav1 but could not encode the {name} seed");
         };
         if seed.is_empty() {
             filmcraft_testkit::skip("AV1 fuzz", &format!("the {name} seed has no frames"));

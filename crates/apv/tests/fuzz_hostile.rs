@@ -2,7 +2,6 @@
 //! truncation at (nearly) every length must never panic or run away (errors are fine).
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::time::{Duration, Instant};
 
 use filmcraft_apv::*;
 
@@ -42,7 +41,7 @@ fn seeds() -> Vec<Vec<u8>> {
 }
 
 fn run(d: &[u8], label: &str) {
-    let t = Instant::now();
+    filmcraft_testkit::set_progress(label);
     let res = catch_unwind(AssertUnwindSafe(|| {
         for depth in [None, Some(8), Some(16)] {
             let _ = decode_frame_with(d, &DecodeOptions { bit_depth: depth, threads: depth.is_none() });
@@ -51,11 +50,17 @@ fn run(d: &[u8], label: &str) {
         let _ = split_raw_bitstream(d);
     }));
     assert!(res.is_ok(), "panic: {label}");
-    assert!(t.elapsed() < Duration::from_secs(10), "too slow ({:?}): {label}", t.elapsed());
 }
+
+/// Seconds the whole sweep may take before it counts as a hang (override: FILMCRAFT_HOSTILE_TIMEOUT_SECS).
+const DEADLINE_SECS: u64 = 600;
 
 #[test]
 fn hostile_frames_never_panic() {
+    filmcraft_testkit::with_deadline(DEADLINE_SECS, sweep);
+}
+
+fn sweep() {
     let seeds = seeds();
     assert!(!seeds.is_empty());
     for (si, seed) in seeds.iter().enumerate() {

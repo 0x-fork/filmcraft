@@ -23,14 +23,16 @@ use crate::stats::{DecodeStats, Stage, Timer};
 use crate::tile::TileDecoder;
 use crate::{Error, Picture, Result};
 
-/// Largest accepted frame side and area: AV1 level 6.3 stops at 16384 x 8704 (the area limit is exactly that
-/// product, so a conforming maximum-size frame is accepted); the sequence header allows 65536 x 65536 (gigabytes of buffers).
-const MAX_FRAME_DIM: u32 = 16384;
-const MAX_FRAME_AREA: u64 = 16384 * 8704;
+/// Largest accepted frame: the AV1 level 6.x limits (Annex A: MaxHSize 16384, MaxVSize 8704, MaxPicSize
+/// 35 651 584 luma samples; level 6.3 is the highest defined). The sequence header allows 65536 x 65536
+/// (gigabytes of buffers), so nothing larger than a level 6.3 frame is decoded.
+const MAX_FRAME_WIDTH: u32 = 16384;
+const MAX_FRAME_HEIGHT: u32 = 8704;
+const MAX_FRAME_AREA: u64 = 35_651_584;
 
 /// Whether a frame of `width` x `height` luma samples is within the decoder's resource limits.
 fn frame_size_allowed(width: u32, height: u32) -> bool {
-    width <= MAX_FRAME_DIM && height <= MAX_FRAME_DIM && u64::from(width) * u64::from(height) <= MAX_FRAME_AREA
+    width <= MAX_FRAME_WIDTH && height <= MAX_FRAME_HEIGHT && u64::from(width) * u64::from(height) <= MAX_FRAME_AREA
 }
 const OBU_SEQUENCE_HEADER_T: u32 = 1;
 const OBU_TEMPORAL_DELIMITER_T: u32 = 2;
@@ -962,16 +964,20 @@ mod tests {
     use super::frame_size_allowed;
 
     #[test]
-    fn level_6_3_maximum_frame_is_allowed() {
-        assert!(frame_size_allowed(16384, 8704));
-        assert!(frame_size_allowed(8704, 16384));
+    fn frames_up_to_the_level_6_3_limits_are_allowed() {
+        assert!(frame_size_allowed(16384, 2176)); // exactly MaxPicSize
+        assert!(frame_size_allowed(4096, 8704)); // exactly MaxVSize
+        assert!(frame_size_allowed(8192, 4352)); // exactly MaxPicSize
+        assert!(frame_size_allowed(7680, 4320)); // 8K UHD
+        assert!(frame_size_allowed(1, 1));
     }
 
     #[test]
     fn frames_beyond_the_limits_are_refused() {
-        assert!(!frame_size_allowed(16384, 8705));
-        assert!(!frame_size_allowed(16385, 1));
-        assert!(!frame_size_allowed(1, 16385));
+        assert!(!frame_size_allowed(16384, 2177)); // one row over MaxPicSize
+        assert!(!frame_size_allowed(16384, 8704)); // within both sides, four times MaxPicSize
+        assert!(!frame_size_allowed(4096, 8705)); // one row over MaxVSize
+        assert!(!frame_size_allowed(16385, 1)); // one column over MaxHSize
         assert!(!frame_size_allowed(65536, 65536));
     }
 }

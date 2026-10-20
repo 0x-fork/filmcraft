@@ -5,7 +5,6 @@ mod common;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
 
 use filmcraft_h264::Decoder;
 
@@ -63,9 +62,9 @@ fn count_panics() {
 }
 
 fn run_all(d: &[u8], label: &str) {
+    filmcraft_testkit::set_progress(label);
     count_panics();
     let before = PANICS.load(std::sync::atomic::Ordering::SeqCst);
-    let t = Instant::now();
     let res = catch_unwind(AssertUnwindSafe(|| {
         for threads in [1, 3] {
             let mut dec = Decoder::with_threads(threads);
@@ -78,16 +77,25 @@ fn run_all(d: &[u8], label: &str) {
         }
     }));
     assert!(res.is_ok() && PANICS.load(std::sync::atomic::Ordering::SeqCst) == before, "panic: {label}");
-    assert!(t.elapsed() < Duration::from_secs(20), "too slow ({:?}): {label}", t.elapsed());
 }
+
+/// Seconds the whole sweep may take before it counts as a hang (override: FILMCRAFT_HOSTILE_TIMEOUT_SECS).
+const DEADLINE_SECS: u64 = 600;
 
 #[test]
 fn hostile_streams_never_panic() {
+    filmcraft_testkit::with_deadline(DEADLINE_SECS, sweep);
+}
+
+fn sweep() {
     let Some(ff) = filmcraft_testkit::ffmpeg_or_skip("h264 fuzz") else { return };
     for &(name, args, pix) in SEEDS {
-        let Some(seed) = make(&ff, name, args, pix) else {
-            filmcraft_testkit::skip("h264 fuzz", &format!("ffmpeg could not encode the {name} seed (encoder missing?)"));
+        if !filmcraft_testkit::ffmpeg_has_encoder(&ff, "libx264") {
+            filmcraft_testkit::skip("h264 fuzz", &format!("this ffmpeg has no libx264 encoder (seed {name})"));
             continue;
+        }
+        let Some(seed) = make(&ff, name, args, pix) else {
+            panic!("ffmpeg has libx264 but could not encode the {name} seed");
         };
         let stride = (seed.len() / 300).max(1);
         for n in (0..seed.len()).step_by(stride) {

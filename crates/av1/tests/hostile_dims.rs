@@ -112,11 +112,14 @@ fn huge_frames_are_refused_without_allocating() {
     refused(30000, 30000);
 }
 
-/// One row past level 6.3 (16384 x 8704) is refused. A frame of exactly 16384 x 8704 is accepted: that boundary is
-/// unit-tested on `frame_size_allowed` in `decoder.rs`, because decoding such a frame end to end allocates ~1.5 GB.
+/// Frames past the level 6.x limits (width 16384, height 8704, area 35 651 584) are refused. The accepted side of
+/// each boundary is unit-tested on `frame_size_allowed` in `decoder.rs`: decoding a maximum-size frame end to end
+/// needs gigabytes.
 #[test]
-fn one_row_past_level_6_3_is_refused() {
-    refused(16384, 8705);
+fn frames_past_the_level_6_limits_are_refused() {
+    refused(16384, 2177);
+    refused(16384, 8704);
+    refused(4096, 8705);
 }
 
 /// A 64x48 4:2:0 key frame whose sequence profile bit was flipped to 2 (4:2:2): blocks such as 4x16 then have no

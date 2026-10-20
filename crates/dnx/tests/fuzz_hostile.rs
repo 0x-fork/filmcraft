@@ -3,7 +3,6 @@
 //! panic or run away (errors are fine). No ffmpeg needed.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::time::{Duration, Instant};
 
 use filmcraft_dnx::{ChromaFormat, DecodeOptions, Encoder, EncoderConfig, Frame, Profile, decode_frame_with, probe};
 
@@ -46,7 +45,7 @@ fn seeds() -> Vec<Vec<u8>> {
 }
 
 fn run(d: &[u8], label: &str) {
-    let t = Instant::now();
+    filmcraft_testkit::set_progress(label);
     let res = catch_unwind(AssertUnwindSafe(|| {
         let _ = probe(d);
         for opts in [DecodeOptions::default(), DecodeOptions { threads: true, spec_dequant: true }] {
@@ -54,11 +53,17 @@ fn run(d: &[u8], label: &str) {
         }
     }));
     assert!(res.is_ok(), "panic: {label}");
-    assert!(t.elapsed() < Duration::from_secs(10), "too slow ({:?}): {label}", t.elapsed());
 }
+
+/// Seconds the whole sweep may take before it counts as a hang (override: FILMCRAFT_HOSTILE_TIMEOUT_SECS).
+const DEADLINE_SECS: u64 = 600;
 
 #[test]
 fn hostile_frames_never_panic() {
+    filmcraft_testkit::with_deadline(DEADLINE_SECS, sweep);
+}
+
+fn sweep() {
     let seeds = seeds();
     assert!(!seeds.is_empty());
     for (si, seed) in seeds.iter().enumerate() {

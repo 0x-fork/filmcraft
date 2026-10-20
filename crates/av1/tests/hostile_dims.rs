@@ -112,17 +112,10 @@ fn huge_frames_are_refused_without_allocating() {
     refused(30000, 30000);
 }
 
-/// A conforming level 6.3 maximum-size frame is past the size check (this stream's tiles are junk, so decoding
-/// may fail later, but not with the "frame size" error); one row more is refused.
+/// One row past level 6.3 (16384 x 8704) is refused. A frame of exactly 16384 x 8704 is accepted: that boundary is
+/// unit-tested on `frame_size_allowed` in `decoder.rs`, because decoding such a frame end to end allocates ~1.5 GB.
 #[test]
-fn level_6_3_maximum_frame_passes_the_size_check() {
-    let mut dec = Decoder::new();
-    let r = dec.decode(&stream(16384, 8704)).and_then(|_| dec.flush_result());
-    assert!(
-        !matches!(&r, Err(Error::Invalid(m)) if m.contains("frame size")),
-        "16384x8704 must not be refused as too large, got {:?}",
-        r.as_ref().map(|p| p.len())
-    );
+fn one_row_past_level_6_3_is_refused() {
     refused(16384, 8705);
 }
 

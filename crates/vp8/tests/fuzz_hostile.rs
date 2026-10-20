@@ -102,6 +102,7 @@ fn hostile_streams_never_panic() {
             continue;
         };
         if seed.is_empty() {
+            filmcraft_testkit::skip("VP8 fuzz", &format!("the {name} seed has no frames"));
             continue;
         }
         // truncate each of the first frames at every length

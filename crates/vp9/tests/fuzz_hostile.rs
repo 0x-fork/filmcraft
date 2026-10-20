@@ -100,7 +100,10 @@ fn iters() -> usize {
 fn hostile_streams_never_panic() {
     let Some(ff) = filmcraft_testkit::ffmpeg_or_skip("VP9 fuzz") else { return };
     for &(name, args, pix) in SEEDS {
-        let Some(seed) = make(&ff, name, args, pix) else { continue };
+        let Some(seed) = make(&ff, name, args, pix) else {
+            filmcraft_testkit::skip("VP9 fuzz", &format!("ffmpeg could not encode the {name} seed (encoder missing?)"));
+            continue;
+        };
         if seed.is_empty() {
             continue;
         }

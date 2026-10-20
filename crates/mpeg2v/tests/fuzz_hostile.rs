@@ -85,7 +85,10 @@ fn run_all(d: &[u8], label: &str) {
 fn hostile_streams_never_panic() {
     let Some(ff) = filmcraft_testkit::ffmpeg_or_skip("mpeg2v fuzz") else { return };
     for spec in &SPECS {
-        let Some(path) = common::make(&ff, spec) else { continue };
+        let Some(path) = common::make(&ff, spec) else {
+            filmcraft_testkit::skip("mpeg2v fuzz", &format!("ffmpeg could not encode the {} seed", spec.name));
+            continue;
+        };
         fuzz(&std::fs::read(path).unwrap());
     }
 }

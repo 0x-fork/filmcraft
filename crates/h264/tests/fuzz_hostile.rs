@@ -85,7 +85,10 @@ fn run_all(d: &[u8], label: &str) {
 fn hostile_streams_never_panic() {
     let Some(ff) = filmcraft_testkit::ffmpeg_or_skip("h264 fuzz") else { return };
     for &(name, args, pix) in SEEDS {
-        let Some(seed) = make(&ff, name, args, pix) else { continue };
+        let Some(seed) = make(&ff, name, args, pix) else {
+            filmcraft_testkit::skip("h264 fuzz", &format!("ffmpeg could not encode the {name} seed (encoder missing?)"));
+            continue;
+        };
         let stride = (seed.len() / 300).max(1);
         for n in (0..seed.len()).step_by(stride) {
             run_all(&seed[..n], &format!("{name} truncate {n}"));

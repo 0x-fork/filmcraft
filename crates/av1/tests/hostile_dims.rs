@@ -112,6 +112,20 @@ fn huge_frames_are_refused_without_allocating() {
     refused(30000, 30000);
 }
 
+/// A conforming level 6.3 maximum-size frame is past the size check (this stream's tiles are junk, so decoding
+/// may fail later, but not with the "frame size" error); one row more is refused.
+#[test]
+fn level_6_3_maximum_frame_passes_the_size_check() {
+    let mut dec = Decoder::new();
+    let r = dec.decode(&stream(16384, 8704)).and_then(|_| dec.flush_result());
+    assert!(
+        !matches!(&r, Err(Error::Invalid(m)) if m.contains("frame size")),
+        "16384x8704 must not be refused as too large, got {:?}",
+        r.as_ref().map(|p| p.len())
+    );
+    refused(16384, 8705);
+}
+
 /// A 64x48 4:2:0 key frame whose sequence profile bit was flipped to 2 (4:2:2): blocks such as 4x16 then have no
 /// chroma size (BLOCK_INVALID) and used to index the size tables out of bounds.
 const PROFILE_FLIPPED: &[u8] = &[

@@ -23,9 +23,15 @@ use crate::stats::{DecodeStats, Stage, Timer};
 use crate::tile::TileDecoder;
 use crate::{Error, Picture, Result};
 
-/// Largest accepted frame side and area: AV1 level 6.3 stops at 16384 x 8704; the sequence header allows 65536 x 65536 (gigabytes of buffers).
+/// Largest accepted frame side and area: AV1 level 6.3 stops at 16384 x 8704 (the area limit is exactly that
+/// product, so a conforming maximum-size frame is accepted); the sequence header allows 65536 x 65536 (gigabytes of buffers).
 const MAX_FRAME_DIM: u32 = 16384;
-const MAX_FRAME_AREA: u64 = 1 << 27;
+const MAX_FRAME_AREA: u64 = 16384 * 8704;
+
+/// Whether a frame of `width` x `height` luma samples is within the decoder's resource limits.
+fn frame_size_allowed(width: u32, height: u32) -> bool {
+    width <= MAX_FRAME_DIM && height <= MAX_FRAME_DIM && u64::from(width) * u64::from(height) <= MAX_FRAME_AREA
+}
 const OBU_SEQUENCE_HEADER_T: u32 = 1;
 const OBU_TEMPORAL_DELIMITER_T: u32 = 2;
 const OBU_FRAME_HEADER_T: u32 = 3;
@@ -508,7 +514,7 @@ impl Decoder {
         }
         // Encoders exist that code frames slightly larger than the sequence maximum (e.g. a
         // 270-line stream coded as 272 lines); like other decoders we accept them.
-        if fh.upscaled_width > MAX_FRAME_DIM || fh.frame_height > MAX_FRAME_DIM || u64::from(fh.upscaled_width) * u64::from(fh.frame_height) > MAX_FRAME_AREA {
+        if !frame_size_allowed(fh.upscaled_width, fh.frame_height) {
             return Err(Error::Invalid("frame size"));
         }
         if !fh.frame_is_intra {
@@ -949,4 +955,23 @@ fn project(fs: &mut FrameState, src: usize, dst_sign: i32) -> bool {
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::frame_size_allowed;
+
+    #[test]
+    fn level_6_3_maximum_frame_is_allowed() {
+        assert!(frame_size_allowed(16384, 8704));
+        assert!(frame_size_allowed(8704, 16384));
+    }
+
+    #[test]
+    fn frames_beyond_the_limits_are_refused() {
+        assert!(!frame_size_allowed(16384, 8705));
+        assert!(!frame_size_allowed(16385, 1));
+        assert!(!frame_size_allowed(1, 16385));
+        assert!(!frame_size_allowed(65536, 65536));
+    }
 }

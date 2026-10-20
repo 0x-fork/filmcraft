@@ -94,18 +94,12 @@ fn alias(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Value) 
     Ok(json!({"panel": panel.id()}))
 }
 
-/// Keep one docked destination available for dragging floating panels back into the workspace.
-fn check_last_docked(layout: &Layout<PanelKind>, action: &Action<PanelKind>) -> Result<(), String> {
-    let panel = match action {
-        Action::Float { panel, .. } => Some(panel),
-        Action::Move { panel, anchor, .. } if layout.floating.iter().any(|window| window.contains(anchor)) => Some(panel),
-        _ => None,
-    };
-    if let Some(panel) = panel {
-        let docked = Layout { root: layout.root.clone(), floating: vec![] };
-        if docked.contains(panel) && docked.panels().len() <= 1 {
-            return Err("the last docked panel must remain in the workspace".into());
-        }
+/// Keep one docked destination available for dragging floating panels back into the workspace:
+/// no move or float may leave the frame tree empty. Closing the last docked panel stays allowed.
+fn check_last_docked(before: &Layout<PanelKind>, action: &Action<PanelKind>, after: &Layout<PanelKind>) -> Result<(), String> {
+    let closing = matches!(action, Action::Close { .. } | Action::CloseGroup { .. } | Action::CloseWindow { .. } | Action::CloseOthers { .. });
+    if !closing && before.root.is_some() && after.root.is_none() {
+        return Err("the last docked panel must remain in the workspace".into());
     }
     Ok(())
 }
@@ -149,8 +143,9 @@ impl FilmcraftApp {
                     closed_floating.push((panel, window.rect));
                 }
             }
-            check_last_docked(&layout, &action)?;
-            layout.apply(action).map_err(|error| error.to_string())?;
+            let before = layout.clone();
+            layout.apply(action.clone()).map_err(|error| error.to_string())?;
+            check_last_docked(&before, &action, &layout)?;
         }
         self.ui.dock = layout;
         self.ui.closed_floating = closed_floating;

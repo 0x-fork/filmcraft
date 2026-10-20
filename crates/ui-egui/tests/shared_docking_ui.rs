@@ -685,3 +685,22 @@ fn clicking_the_active_sequence_tab_focuses_the_timeline() {
     click(&mut h, &format!("timeline.tab.{active}"));
     assert_eq!(h.state().ui.focused, PanelKind::Timeline);
 }
+
+/// No move or float may empty the frame tree, whichever unit it moves.
+#[test]
+fn the_last_docked_group_cannot_float_away() {
+    let mut app = FilmcraftApp::new(Session::default());
+    app.ui.dock = root(tabs(&[PanelKind::Project, PanelKind::Info], 0));
+    let ctx = egui::Context::default();
+    let before = app.ui.dock.clone();
+    let float = craft_ui::docking::Target::Float { rect: Some([20.0, 20.0, 300.0, 200.0]) };
+    for action in [Action::MoveGroup { panel: PanelKind::Project, to: float.clone() }, Action::MoveColumn { panel: PanelKind::Project, to: float.clone() }] {
+        let _ = menus::invoke(&mut app, &ctx, "window.dockAction", json!({ "action": action }));
+        assert_eq!(app.ui.dock, before);
+    }
+    assert!(menus::invoke(&mut app, &ctx, "window.panel.float", json!({"panel": "Project", "group": true})).is_err());
+    assert_eq!(app.ui.dock, before);
+    // one panel of the group may float; the other stays docked
+    menus::invoke(&mut app, &ctx, "window.panel.float", json!({"panel": "Info"})).unwrap();
+    assert!(app.ui.dock.docked(PanelKind::Project) && !app.ui.dock.docked(PanelKind::Info));
+}

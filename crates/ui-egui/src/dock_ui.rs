@@ -286,8 +286,9 @@ impl FilmcraftApp {
                     Some(index) => (format!("panel.float.{index}.move"), "Move floating panel"),
                     None => continue,
                 },
-                Hit::Resize(panel, ResizeEdge::BottomRight) => match window(panel) {
-                    Some(index) => (format!("panel.float.{index}.resize"), "Resize floating panel"),
+                Hit::Resize(panel, edge) => match window(panel) {
+                    Some(index) if *edge == ResizeEdge::BottomRight => (format!("panel.float.{index}.resize"), "Resize floating panel"),
+                    Some(index) => (format!("panel.float.{index}.resize.{edge:?}"), "Resize floating panel"),
                     None => continue,
                 },
                 Hit::Divider(Divider::Split(path)) => {

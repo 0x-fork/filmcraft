@@ -1514,7 +1514,7 @@ impl FilmcraftApp {
         self.auto
             .previous
             .iter()
-            .any(|e| e.response_id == Some(focused) && (e.id.starts_with("dock.gutter.") || (e.id.starts_with("panel.float.") && e.id.ends_with(".resize"))))
+            .any(|e| e.response_id == Some(focused) && (e.id.starts_with("dock.gutter.") || (e.id.starts_with("panel.float.") && e.id.contains(".resize"))))
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {

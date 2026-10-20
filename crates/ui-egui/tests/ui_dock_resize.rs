@@ -152,3 +152,28 @@ fn space_plays_after_a_pane_is_resized_with_the_pointer() {
     press(&mut h, Key::Space);
     assert!(!h.state().playback.playing);
 }
+
+/// Space plays while any edge of a floating window's resize grip has keyboard focus, as it does
+/// for the bottom-right corner and pane dividers (#1482).
+#[test]
+fn space_plays_while_any_floating_resize_edge_has_focus() {
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).unwrap();
+    let app = FilmcraftApp::new(session);
+    let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(move |_| app);
+    frames(&mut h, 4);
+    let ctx = h.ctx.clone();
+    filmcraft_ui_egui::menus::invoke(h.state_mut(), &ctx, "window.floatPanel", json!({"panel": "Info", "rect": [300, 200, 400, 300]})).unwrap();
+    frames(&mut h, 3);
+    use craft_ui::docking::{DockArea, Hit, ResizeEdge};
+    for edge in [ResizeEdge::Top, ResizeEdge::Left, ResizeEdge::BottomRight] {
+        let grip = DockArea::<PanelKind>::hit_id(filmcraft_ui_egui::dock_area_id(), &Hit::Resize(PanelKind::Info, edge));
+        h.ctx.memory_mut(|memory| memory.request_focus(grip));
+        frames(&mut h, 2);
+        assert_eq!(h.ctx.memory(|memory| memory.focused()), Some(grip), "{edge:?}");
+        press(&mut h, Key::Space);
+        assert!(h.state().playback.playing, "Space must play with the {edge:?} grip focused");
+        press(&mut h, Key::Space);
+        assert!(!h.state().playback.playing);
+    }
+}

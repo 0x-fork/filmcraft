@@ -757,3 +757,60 @@ fn activate_reopens_a_closed_panel() {
     menus::invoke(&mut app, &ctx, "window.panel.activate", json!({"panel": "Info"})).unwrap();
     assert!(app.ui.dock.is_visible(PanelKind::Info));
 }
+
+/// Press and release `button` at `pos`.
+fn click_at(h: &mut Harness<'_, FilmcraftApp>, pos: egui::Pos2, button: PointerButton) {
+    h.event(Event::PointerMoved(pos));
+    step(h);
+    for pressed in [true, false] {
+        h.event(Event::PointerButton { pos, button, pressed, modifiers: Modifiers::NONE });
+        step(h);
+    }
+    for _ in 0..3 {
+        step(h);
+    }
+}
+
+/// Right-click the tab `tab` and choose the context-menu item labeled `item`.
+fn tab_menu(h: &mut Harness<'_, FilmcraftApp>, tab: &str, item: &str) {
+    let pos = rect(h, tab).center();
+    click_at(h, pos, PointerButton::Secondary);
+    let item = h.get_by_label(item).rect().center();
+    click_at(h, item, PointerButton::Primary);
+}
+
+/// A Timeline tab's context menu carries FilmCraft's Timeline items, and its Close Panel closes
+/// the active sequence: the Timeline stays.
+#[test]
+fn close_panel_on_the_timeline_tab_closes_the_sequence() {
+    let mut h = demo_harness();
+    let active = h.state().session.state.active_sequence.unwrap();
+    let pos = rect(&h, "panel.tab.Timeline").center();
+    click_at(&mut h, pos, PointerButton::Secondary);
+    for id in ["panel.menu.Timeline.revealSequence", "panel.tabMenu.Timeline.closeOthers", "panel.tabMenu.Timeline.restoreWorkspace"] {
+        assert!(h.state().auto.find(id).is_some(), "{id} is missing from the tab menu");
+    }
+    let close = h.get_by_label("Close Panel").rect().center();
+    click_at(&mut h, close, PointerButton::Primary);
+    assert!(!h.state().session.state.open_sequences.contains(&active), "the sequence stays open");
+    assert!(h.state().ui.dock.is_visible(PanelKind::Timeline), "the Timeline closed");
+}
+
+/// Close Panel Group on a group holding the Timeline closes the active sequence and the group's
+/// other panels; the Timeline stays.
+#[test]
+fn close_panel_group_keeps_the_timeline_and_closes_the_sequence() {
+    let mut h = demo_harness();
+    let ctx = h.ctx.clone();
+    menus::invoke(h.state_mut(), &ctx, "window.dockPanel", json!({"panel": "Info", "anchor": "Timeline", "zone": "center"})).unwrap();
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(same_group(&h.state().ui.dock, PanelKind::Info, PanelKind::Timeline));
+    let active = h.state().session.state.active_sequence.unwrap();
+    tab_menu(&mut h, "panel.tab.Info", "Close Panel Group");
+    let state = h.state();
+    assert!(!state.session.state.open_sequences.contains(&active), "the sequence stays open");
+    assert!(state.ui.dock.is_visible(PanelKind::Timeline), "the Timeline closed");
+    assert!(!state.ui.dock.contains(&PanelKind::Info), "Info stays open");
+}

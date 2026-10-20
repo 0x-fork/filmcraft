@@ -1,6 +1,7 @@
 //! FilmCraft's panels in craft-ui's shared docking, Frame profile. craft-ui draws the frames, tab
 //! strips, floating windows and drag previews and owns the gestures; FilmCraft draws the panel
-//! bodies, the ≡ panel menu and the Timeline's sequence tabs, and maps its control commands onto
+//! bodies, the ≡ panel menu, the panel items of each tab's context menu and the Timeline's
+//! sequence tabs, and maps its control commands onto
 //! craft-ui's `DockCommand`.
 
 use craft_ui::docking::{Action, Divider, DockArea, DockCommand, DockContent, DockEvent, DockStyle, FloatSpace, Hit, Layout, Profile, ResizeEdge, Workspace};
@@ -217,9 +218,10 @@ impl FilmcraftApp {
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt("filmcraft-dock-area"));
         child.set_clip_rect(body.intersect(ui.clip_rect()));
         let seq_width = dock::sequence_tabs_width(ui, &seqs);
-        let mut content = FilmContent { app: self, seqs, seq_width, tokens: t, seq_actions: Vec::new(), menu: None, bodies: Vec::new() };
+        let mut content =
+            FilmContent { app: self, seqs, seq_width, tokens: t, seq_actions: Vec::new(), menu: None, bodies: Vec::new(), restore_workspace: false };
         let output = area.show_content(&mut child, &layout, &style, &mut content);
-        let FilmContent { seq_actions, mut menu, bodies, .. } = content;
+        let FilmContent { seq_actions, mut menu, bodies, restore_workspace, .. } = content;
         ctx.data_mut(|data| data.insert_temp(bodies_id(), bodies));
         if let Some(panel) = output.focused {
             self.ui.focused = panel;
@@ -232,18 +234,16 @@ impl FilmcraftApp {
                 panels::keyboard::toggle_maximize(self, panel);
             }
         }
-        let middle_click = ctx.input(|input| input.pointer.button_clicked(egui::PointerButton::Middle));
         for action in output.actions {
-            // A middle click on the Timeline's tab closes its active sequence; the panel stays.
-            if middle_click && action == (Action::Close { panel: PanelKind::Timeline }) && self.session.state.active_sequence.is_some() {
-                if let Err(error) = self.session.execute("sequence.close", json!({})) {
-                    self.ui.status = error.to_string();
+            for action in self.close_keeping_timeline(action) {
+                if let Err(error) = self.dock_command(&ctx, action) {
+                    self.ui.status = error;
                 }
-                continue;
             }
-            if let Err(error) = self.dock_command(&ctx, action) {
-                self.ui.status = error;
-            }
+        }
+        if restore_workspace {
+            let workspace = self.ui.workspace.clone();
+            self.set_workspace(&workspace);
         }
         for action in seq_actions {
             let result = match action {
@@ -283,6 +283,24 @@ impl FilmcraftApp {
         self.register_dock_hits(&hits);
         panels::panel_menu_popup(self, ui);
         self.cancel_value_drag(ui.ctx());
+    }
+
+    /// The Timeline's tabs stand for its open sequences: a close from the dock area (a tab's
+    /// middle click or Close Panel, a group, window or Close Other Panels item) that would
+    /// remove the Timeline while a sequence is open closes the active sequence instead, and the
+    /// Timeline stays. The other panels the action covers still close.
+    fn close_keeping_timeline(&mut self, action: Action<PanelKind>) -> Vec<Action<PanelKind>> {
+        if self.session.state.active_sequence.is_none() {
+            return vec![action];
+        }
+        let closed = match self.ui.dock.closed_by(&action) {
+            Ok(closed) if closed.contains(&PanelKind::Timeline) => closed,
+            _ => return vec![action],
+        };
+        if let Err(error) = self.session.execute("sequence.close", json!({})) {
+            self.ui.status = error.to_string();
+        }
+        closed.into_iter().filter(|panel| *panel != PanelKind::Timeline).map(|panel| Action::Close { panel }).collect()
     }
 
     /// Automation ids for craft-ui's gesture sources: `panel.tab.<Panel>`, `panel.drag.<Panel>`
@@ -351,6 +369,8 @@ struct FilmContent<'a> {
     /// The ≡ button clicked: its panel and where its menu opens.
     menu: Option<(PanelKind, egui::Pos2)>,
     bodies: Vec<(PanelKind, Rect, egui::LayerId)>,
+    /// Restore Workspace chosen in a tab's menu; it replaces the layout after the dock area is drawn.
+    restore_workspace: bool,
 }
 
 impl DockContent<PanelKind> for FilmContent<'_> {
@@ -391,6 +411,34 @@ impl DockContent<PanelKind> for FilmContent<'_> {
     /// With no sequence open, the Timeline's tab says so.
     fn label(&mut self, _ui: &egui::Ui, panel: &PanelKind, logical: &str, _font: &egui::FontId, _color: egui::Color32) -> egui::WidgetText {
         if *panel == PanelKind::Timeline && self.seqs.open.is_empty() { self.seqs.label().into() } else { logical.into() }
+    }
+
+    /// FilmCraft's own panel items head a tab's context menu, as in its ≡ menu; craft-ui adds
+    /// Undock, Move, Close and the group items after them.
+    fn panel_menu(&mut self, ui: &mut egui::Ui, panel: &PanelKind) {
+        let app = &mut *self.app;
+        let mut close = false;
+        if *panel == PanelKind::Timeline && app.session.state.active_sequence.is_some() {
+            let response = ui.add_enabled(app.session.state.open_sequences.len() > 1, egui::Button::new(tl!("Close Other Timeline Panels")));
+            app.auto.add_response("panel.tabMenu.Timeline.closeOthers", &response, "Close Other Timeline Panels");
+            if response.clicked() {
+                if let Err(error) = app.session.execute("sequence.closeOthers", json!({})) {
+                    app.ui.status = error.to_string();
+                }
+                close = true;
+            }
+        }
+        let response = ui.button(tl!("Restore Workspace"));
+        app.auto.add_response(&format!("panel.tabMenu.{}.restoreWorkspace", panel.id()), &response, "Restore Workspace");
+        if response.clicked() {
+            self.restore_workspace = true;
+            close = true;
+        }
+        close |= panels::panel_items(app, ui, *panel);
+        ui.separator();
+        if close {
+            ui.close();
+        }
     }
 
     /// Tools and the audio meters are narrow strips without a tab strip.

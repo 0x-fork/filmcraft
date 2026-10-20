@@ -184,8 +184,10 @@ Time is in ticks (254 016 000 000 per second); commands also accept `seconds`, `
 Invalid source/target identities and non-finite or out-of-range geometry return an error with
 the layout unchanged. `ui.inspect.ui.dock.floating` reports floating windows and their
 logical-point rectangles. `panel.drag.<Panel>` locates the drag bar of each panel's group;
-`panel.float.<index>.move` and `.resize` locate floating geometry handles; `ui.docking` lists
-every docking gesture source. Named workspace saves include floating windows.
+`panel.float.<index>.move` and `.resize` locate floating geometry handles; `dock.gutter.<path>`
+locates a split divider (`a`/`b` per split level), and `dock.gutter.group.<Panel>`,
+`.stack.<Panel>` and `.column.<Panel>` the dividers below a group or accordion entry and beside a
+column, named by the panel they hold first; `ui.docking` lists every docking gesture source. Named workspace saves include floating windows.
 
 The panels use craft-ui's shared docking in its Frame profile. Its control commands
 (`window.panel.move`, `.float`, `.dock`, `.activate`, `.close`, `.closeGroup`, `.closeOthers`,

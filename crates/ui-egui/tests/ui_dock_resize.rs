@@ -177,3 +177,32 @@ fn space_plays_while_any_floating_resize_edge_has_focus() {
         assert!(!h.state().playback.playing);
     }
 }
+
+/// The divider between groups stacked in a floating window has an automation id, and Space plays
+/// while it has keyboard focus (#1482).
+#[test]
+fn space_plays_while_a_floating_group_divider_has_focus() {
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).unwrap();
+    let app = FilmcraftApp::new(session);
+    let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(move |_| app);
+    frames(&mut h, 4);
+    let ctx = h.ctx.clone();
+    filmcraft_ui_egui::menus::invoke(h.state_mut(), &ctx, "window.floatPanel", json!({"panel": "Info", "rect": [300, 200, 400, 400]})).unwrap();
+    filmcraft_ui_egui::menus::invoke(h.state_mut(), &ctx, "window.dockPanel", json!({"panel": "Project", "anchor": "Info", "zone": "bottom"})).unwrap();
+    frames(&mut h, 3);
+    use craft_ui::docking::{Divider, DockArea, Hit};
+    let area = filmcraft_ui_egui::dock_area_id();
+    let hit = Hit::Divider(Divider::Group(PanelKind::Info));
+    assert!(DockArea::<PanelKind>::hit_rects(&h.ctx, area).iter().any(|(drawn, _)| *drawn == hit), "no group divider drawn");
+    let divider = DockArea::<PanelKind>::hit_id(area, &hit);
+    let element = h.state().auto.find("dock.gutter.group.Info").expect("the group divider has no automation id");
+    assert_eq!(element.widget_id, Some(format!("{:016x}", divider.value())));
+    h.ctx.memory_mut(|memory| memory.request_focus(divider));
+    frames(&mut h, 2);
+    assert_eq!(h.ctx.memory(|memory| memory.focused()), Some(divider));
+    press(&mut h, Key::Space);
+    assert!(h.state().playback.playing, "Space must play with the group divider focused");
+    press(&mut h, Key::Space);
+    assert!(!h.state().playback.playing);
+}

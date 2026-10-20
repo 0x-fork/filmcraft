@@ -305,7 +305,9 @@ impl FilmcraftApp {
 
     /// Automation ids for craft-ui's gesture sources: `panel.tab.<Panel>`, `panel.drag.<Panel>`
     /// (the group's drag bar), `panel.tabs.more.<Panel>`, `panel.float.<n>.move` and `.resize`,
-    /// and `dock.gutter.<path>` (`a`/`b` per split level).
+    /// `dock.gutter.<path>` (`a`/`b` per split level), and `dock.gutter.group.<Panel>`,
+    /// `.stack.<Panel>` and `.column.<Panel>` for the dividers below a group or accordion entry and
+    /// beside a column, named by the panel they hold first.
     fn register_dock_hits(&mut self, hits: &[(Hit<PanelKind>, Rect)]) {
         let window = |panel: &PanelKind| self.ui.dock.floating.iter().position(|window| window.contains(panel));
         let mut found = Vec::new();
@@ -326,6 +328,9 @@ impl FilmcraftApp {
                 Hit::Divider(Divider::Split(path)) => {
                     (format!("dock.gutter.{}", path.iter().map(|second| if *second { 'b' } else { 'a' }).collect::<String>()), "gutter")
                 }
+                Hit::Divider(Divider::Group(panel)) => (format!("dock.gutter.group.{}", panel.id()), "gutter"),
+                Hit::Divider(Divider::Stack(panel)) => (format!("dock.gutter.stack.{}", panel.id()), "gutter"),
+                Hit::Divider(Divider::Column(panel)) => (format!("dock.gutter.column.{}", panel.id()), "gutter"),
                 _ => continue,
             };
             found.push((entry, *rect, DockArea::hit_id(area_id(), hit)));

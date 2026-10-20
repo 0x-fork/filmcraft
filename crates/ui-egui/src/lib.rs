@@ -1508,13 +1508,14 @@ impl FilmcraftApp {
         self.menu_sent = items;
     }
 
-    /// Whether keyboard focus is on a dock divider or a floating panel's resize grip, as drawn last pass.
+    /// Whether keyboard focus is on any dock divider or floating-window resize grip, as drawn last pass.
     fn divider_focused(&self, ctx: &egui::Context) -> bool {
+        use craft_ui::docking::{DockArea, Hit};
         let Some(focused) = ctx.memory(|m| m.focused()) else { return false };
-        self.auto
-            .previous
+        let area = dock_ui::area_id();
+        DockArea::<PanelKind>::hit_rects(ctx, area)
             .iter()
-            .any(|e| e.response_id == Some(focused) && (e.id.starts_with("dock.gutter.") || (e.id.starts_with("panel.float.") && e.id.contains(".resize"))))
+            .any(|(hit, _)| matches!(hit, Hit::Divider(_) | Hit::Resize(..)) && DockArea::hit_id(area, hit) == focused)
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
@@ -1524,8 +1525,8 @@ impl FilmcraftApp {
             self.bindings = menus::bindings(self);
             self.bindings_rev = self.session.shortcuts.revision;
         }
-        // A pane divider or floating-panel grip keeps focus after a pointer drag so arrows can
-        // nudge it, but it takes no other key: Space and the other shortcuts keep working (#1482).
+        // A focused dock divider or floating-window grip takes the arrow keys to nudge it, but no
+        // other key: Space and the other shortcuts keep working (#1482).
         let divider_focused = self.divider_focused(ctx);
         if (ctx.egui_wants_keyboard_input() && !divider_focused) || self.dialog == Some(Dialog::Shortcuts) {
             return;

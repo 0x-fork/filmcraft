@@ -74,7 +74,7 @@ craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-l
 
 # ui
 # Shared frontend components; keep this dependency above the engine boundary.
-craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "3600104e7632336be5312b6e6f62b5acf2ea37e7", features = ["serde"] }
+craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "07585888d6db7033099e915f5ad2317eec38c40d", features = ["serde"] }
 egui = "0.36"
 eframe = { version = "0.36", default-features = false }
 egui_kittest = "0.36"

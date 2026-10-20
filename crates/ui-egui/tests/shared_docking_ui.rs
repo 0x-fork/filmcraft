@@ -663,3 +663,25 @@ fn window_layer(h: &Harness<'_, FilmcraftApp>, panel: PanelKind) -> egui::LayerI
     let window = h.state().ui.dock.floating.iter().find(|window| window.contains(&panel)).unwrap();
     DockArea::floating_layer(filmcraft_ui_egui::dock_area_id(), window).unwrap()
 }
+
+fn demo_harness() -> Harness<'static, FilmcraftApp> {
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).unwrap();
+    let app = FilmcraftApp::new(session);
+    let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(move |_| app);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    h
+}
+
+/// Clicking the Timeline's active sequence tab, in its group header, focuses the Timeline.
+#[test]
+fn clicking_the_active_sequence_tab_focuses_the_timeline() {
+    let mut h = demo_harness();
+    click(&mut h, "panel.tab.Project");
+    assert_eq!(h.state().ui.focused, PanelKind::Project);
+    let active = h.state().session.state.active_sequence.unwrap().0;
+    click(&mut h, &format!("timeline.tab.{active}"));
+    assert_eq!(h.state().ui.focused, PanelKind::Timeline);
+}

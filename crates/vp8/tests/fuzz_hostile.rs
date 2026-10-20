@@ -23,7 +23,7 @@ impl Rng {
 /// (name, encoder args, pix_fmt)
 const SEEDS: &[(&str, &str, &str)] = &[
     ("vp8_fz_default", "-c:v libvpx -g 4 -b:v 300k", "yuv420p"),
-    ("vp8_fz_partitions", "-c:v libvpx -g 6 -b:v 300k -token-parts 3 -auto-alt-ref 0 -lag-in-frames 0 -error-resilient 1", "yuv420p"),
+    ("vp8_fz_partitions", "-c:v libvpx -g 6 -b:v 300k -slices 8 -auto-alt-ref 0 -lag-in-frames 0 -error-resilient 1", "yuv420p"),
 ];
 
 fn ivf_frames(data: &[u8]) -> Vec<Vec<u8>> {

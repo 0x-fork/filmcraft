@@ -23,7 +23,8 @@ impl Rng {
 /// (name, encoder args, pix_fmt)
 const SEEDS: &[(&str, &str, &str)] = &[
     ("vp9_fz_default", "-c:v libvpx-vp9 -g 4 -b:v 300k -lag-in-frames 0", "yuv420p"),
-    ("vp9_fz_tiles_10bit", "-c:v libvpx-vp9 -g 6 -b:v 300k -lag-in-frames 0 -tile-columns 1 -profile:v 2", "yuv420p10le"),
+    // libvpx needs 256 px per tile column, so two columns need 512 px
+    ("vp9_fz_2tiles_10bit", "-c:v libvpx-vp9 -g 6 -b:v 300k -lag-in-frames 0 -tile-columns 1 -profile:v 2 -s 512x48", "yuv420p10le"),
     ("vp9_fz_444", "-c:v libvpx-vp9 -g 6 -b:v 300k -lag-in-frames 0 -profile:v 1", "yuv444p"),
     ("vp9_fz_altref", "-c:v libvpx-vp9 -g 6 -b:v 300k -auto-alt-ref 1 -lag-in-frames 5", "yuv420p"),
 ];

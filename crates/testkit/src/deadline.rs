@@ -21,6 +21,10 @@ pub fn set_progress(label: &str) {
 /// worker is abandoned (the failing test process exits anyway).
 pub fn with_deadline(secs: u64, f: impl FnOnce() + Send + 'static) {
     let secs = std::env::var("FILMCRAFT_HOSTILE_TIMEOUT_SECS").ok().and_then(|v| v.parse::<u64>().ok()).filter(|&n| n > 0).unwrap_or(secs);
+    run_with_deadline(secs, f);
+}
+
+fn run_with_deadline(secs: u64, f: impl FnOnce() + Send + 'static) {
     let (tx, rx) = mpsc::channel();
     // a failed spawn shows up as "worker gone" below
     let _ = std::thread::Builder::new().name("hostile deadline".into()).spawn(move || {
@@ -55,8 +59,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "last input: seed 7 byte 3")]
     fn a_hang_fails_and_names_the_input() {
-        // a body that outlives the 1 s budget (the env override is unset in tests)
+        // a body that outlives the 1 s budget; the inner fn, so FILMCRAFT_HOSTILE_TIMEOUT_SECS cannot lengthen it
         set_progress("seed 7 byte 3");
-        with_deadline(1, || std::thread::sleep(Duration::from_secs(30)));
+        run_with_deadline(1, || std::thread::sleep(Duration::from_secs(30)));
     }
 }

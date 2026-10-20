@@ -21,22 +21,23 @@ impl Rng {
     }
 }
 
-/// (name, extra x264 args, pix_fmt)
-const SEEDS: &[(&str, &str, &str)] = &[
-    ("hevc_fz_main_b", "-x265-params log-level=error:bframes=2:keyint=8:min-keyint=8:sao=1:amp=1", "yuv420p"),
-    ("hevc_fz_main10", "-x265-params log-level=error:bframes=1:keyint=6:min-keyint=6", "yuv420p10le"),
-    ("hevc_fz_wpp_slices", "-x265-params log-level=error:keyint=6:min-keyint=6:wpp=1:slices=3", "yuv420p"),
-    ("hevc_fz_tiles", "-x265-params log-level=error:keyint=6:min-keyint=6:tiles=2x2", "yuv420p"),
-    ("hevc_fz_422_10", "-x265-params log-level=error:keyint=6:min-keyint=6", "yuv422p10le"),
+/// (name, encoder, extra encoder args, pix_fmt)
+const SEEDS: &[(&str, &str, &str, &str)] = &[
+    ("hevc_fz_main_b", "libx265", "-x265-params log-level=error:bframes=2:keyint=8:min-keyint=8:sao=1:amp=1", "yuv420p"),
+    ("hevc_fz_main10", "libx265", "-x265-params log-level=error:bframes=1:keyint=6:min-keyint=6", "yuv420p10le"),
+    ("hevc_fz_wpp_slices", "libx265", "-x265-params log-level=error:keyint=6:min-keyint=6:wpp=1:slices=3", "yuv420p"),
+    // x265 cannot encode tiles; kvazaar can, at 256 x 64 luma per tile at least (Main profile)
+    ("hevc_fz_tiles_kvazaar", "libkvazaar", "-s 512x128 -kvazaar-params tiles=2x2,gop=0,period=6,qp=40", "yuv420p"),
+    ("hevc_fz_422_10", "libx265", "-x265-params log-level=error:keyint=6:min-keyint=6", "yuv422p10le"),
 ];
 
-fn make(ff: &std::path::Path, name: &str, args: &str, pix: &str) -> Option<Vec<u8>> {
+fn make(ff: &std::path::Path, name: &str, enc: &str, args: &str, pix: &str) -> Option<Vec<u8>> {
     let out = filmcraft_testkit::fixtures_dir("hevc").join(format!("{name}.hevc"));
     let p = filmcraft_testkit::fixtures::generate(&out, |tmp| {
         let a: Vec<&str> = args.split_whitespace().collect();
         matches!(
             Command::new(ff)
-                .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=25", "-frames:v", "7", "-pix_fmt", pix, "-c:v", "libx265"])
+                .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=25", "-frames:v", "7", "-pix_fmt", pix, "-c:v", enc])
                 .args(a)
                 .args(["-f", "hevc"])
                 .arg(tmp)
@@ -89,13 +90,13 @@ fn hostile_streams_never_panic() {
 
 fn sweep() {
     let Some(ff) = filmcraft_testkit::ffmpeg_or_skip("hevc fuzz") else { return };
-    for &(name, args, pix) in SEEDS {
-        if !filmcraft_testkit::ffmpeg_has_encoder(&ff, "libx265") {
-            filmcraft_testkit::skip("hevc fuzz", &format!("this ffmpeg has no libx265 encoder (seed {name})"));
+    for &(name, enc, args, pix) in SEEDS {
+        if !filmcraft_testkit::ffmpeg_has_encoder(&ff, enc) {
+            filmcraft_testkit::skip("hevc fuzz", &format!("this ffmpeg has no {enc} encoder (seed {name})"));
             continue;
         }
-        let Some(seed) = make(&ff, name, args, pix) else {
-            panic!("ffmpeg has libx265 but could not encode the {name} seed");
+        let Some(seed) = make(&ff, name, enc, args, pix) else {
+            panic!("ffmpeg has {enc} but could not encode the {name} seed");
         };
         let stride = (seed.len() / 300).max(1);
         for n in (0..seed.len()).step_by(stride) {

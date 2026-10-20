@@ -5,7 +5,7 @@ use std::sync::{
     mpsc::{Sender, channel},
 };
 
-use egui::{Event, Id, Key, Modifiers, vec2};
+use egui::{Event, Key, Modifiers, vec2};
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::{FilmcraftApp, control::ControlRequest, dock::PanelKind};
@@ -107,7 +107,10 @@ fn background_divider(isolated: bool) {
     d.frames(3, true);
     let before_project = d.h.state().session.project.clone();
     let before_playheads = d.h.state().session.state.playheads.clone();
-    let divider = Id::new("filmcraft-docking").with(("split", &Vec::<bool>::new()));
+    let divider = craft_ui::docking::DockArea::<PanelKind>::hit_id(
+        filmcraft_ui_egui::dock_area_id(),
+        &craft_ui::docking::Hit::Divider(craft_ui::docking::Divider::Split(vec![])),
+    );
     d.h.ctx.memory_mut(|memory| memory.request_focus(divider));
     d.frames(2, true);
     d.h.input_mut().events.push(Event::WindowFocused(false));

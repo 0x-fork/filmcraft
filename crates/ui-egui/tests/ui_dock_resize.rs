@@ -1,6 +1,6 @@
 //! Shared pane resizing in the full application, including application shortcut ownership.
 
-use egui::{Event, Id, Key, Modifiers, PointerButton, Rect, pos2, vec2};
+use egui::{Event, Key, Modifiers, PointerButton, Rect, pos2, vec2};
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
@@ -67,7 +67,10 @@ fn focused_dock_resize_owns_arrows_and_keeps_pointer_dragging() {
     frames(&mut h, 3);
     let before_project = h.state().session.project.clone();
     let before_playheads = h.state().session.state.playheads.clone();
-    let id = Id::new("filmcraft-docking").with(("split", &Vec::<bool>::new()));
+    let id = craft_ui::docking::DockArea::<PanelKind>::hit_id(
+        filmcraft_ui_egui::dock_area_id(),
+        &craft_ui::docking::Hit::Divider(craft_ui::docking::Divider::Split(vec![])),
+    );
     h.ctx.memory_mut(|memory| memory.request_focus(id));
     frames(&mut h, 2);
     assert_eq!(h.ctx.memory(|memory| memory.focused()), Some(id));
@@ -136,7 +139,14 @@ fn space_plays_after_a_pane_is_resized_with_the_pointer() {
     h.event(Event::PointerButton { pos: from + vec2(20.0, 0.0), button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
     frames(&mut h, 3);
     assert_eq!(first_size(&h), 420.0);
-    // Resizing a pane must not cost the editor its shortcuts.
+    // The divider keeps keyboard focus so arrows can nudge it; that must not cost the editor its shortcuts.
+    assert_eq!(
+        h.ctx.memory(|memory| memory.focused()),
+        Some(craft_ui::docking::DockArea::<PanelKind>::hit_id(
+            filmcraft_ui_egui::dock_area_id(),
+            &craft_ui::docking::Hit::Divider(craft_ui::docking::Divider::Split(vec![]))
+        ))
+    );
     press(&mut h, Key::Space);
     assert!(h.state().playback.playing, "Space must start playback after resizing a pane (#1482)");
     press(&mut h, Key::Space);

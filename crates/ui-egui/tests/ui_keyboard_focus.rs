@@ -76,8 +76,8 @@ fn dock_tab_traversal_and_enter_change_the_visible_panel_without_editing() {
         floating: vec![],
     };
     h.run_steps(3);
-    let first = Id::new("filmcraft-docking").with(("tab", PanelKind::Project));
-    let second = Id::new("filmcraft-docking").with(("tab", PanelKind::Effects));
+    let first = craft_ui::docking::DockArea::<PanelKind>::hit_id(filmcraft_ui_egui::dock_area_id(), &craft_ui::docking::Hit::Tab(PanelKind::Project));
+    let second = craft_ui::docking::DockArea::<PanelKind>::hit_id(filmcraft_ui_egui::dock_area_id(), &craft_ui::docking::Hit::Tab(PanelKind::Effects));
     for _ in 0..128 {
         key(&mut h, Key::Tab, Modifiers::NONE);
         if h.ctx.memory(|m| m.focused()) == Some(second) {

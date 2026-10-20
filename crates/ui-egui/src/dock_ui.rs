@@ -3,9 +3,7 @@
 //! bodies, the ≡ panel menu and the Timeline's sequence tabs, and maps its control commands onto
 //! craft-ui's `DockCommand`.
 
-use craft_ui::docking::{
-    Action, Divider, DockArea, DockCommand, DockContent, DockEvent, DockStyle, FloatSpace, Hit, Layout, Placement, Profile, ResizeEdge, Workspace, Zone,
-};
+use craft_ui::docking::{Action, Divider, DockArea, DockCommand, DockContent, DockEvent, DockStyle, FloatSpace, Hit, Layout, Profile, ResizeEdge, Workspace};
 use egui::{Rect, Sense, Stroke, StrokeKind, vec2};
 use serde_json::{Value, json};
 
@@ -83,25 +81,11 @@ fn alias(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Value) 
                 }
                 None if params.get("before").is_some() => return Err("before needs an anchor panel".into()),
                 // Without an anchor a side zone docks along that edge of the whole workspace.
-                None => {
-                    let edge = match zone.to_ascii_lowercase().as_str() {
-                        "left" => Some(Zone::Left),
-                        "right" => Some(Zone::Right),
-                        "top" => Some(Zone::Top),
-                        "bottom" => Some(Zone::Bottom),
-                        "center" | "tab" => None,
-                        _ => return Err("unknown docking zone".into()),
-                    };
-                    match edge {
-                        None => json!({"command": "window.panel.dock", "panel": panel}),
-                        Some(edge) => {
-                            let docked = Layout { root: app.ui.dock.root.clone(), floating: vec![] };
-                            let anchor =
-                                docked.panels().into_iter().copied().find(|other| *other != panel).ok_or("another docked panel is required to dock beside")?;
-                            json!({"command": "window.panel.layout", "action": Action::Move { panel, anchor, placement: Placement::Edge(edge) }})
-                        }
-                    }
-                }
+                None => match zone.to_ascii_lowercase().as_str() {
+                    "center" | "tab" => json!({"command": "window.panel.dock", "panel": panel}),
+                    edge @ ("left" | "right" | "top" | "bottom") => json!({"command": "window.panel.dock", "panel": panel, "zone": edge}),
+                    _ => return Err("unknown docking zone".into()),
+                },
             }
         }
     };
@@ -191,8 +175,7 @@ impl FilmcraftApp {
         let layers = ctx.memory(|memory| memory.layer_ids().collect::<Vec<_>>());
         let rank = |layer: &egui::LayerId| layers.iter().position(|other| other == layer);
         !self.ui.dock.floating.iter().any(|window| {
-            let Some(first) = window.panels().next() else { return false };
-            let layer = egui::LayerId::new(egui::Order::Middle, area_id().with(("floating", *first)));
+            let Some(layer) = DockArea::floating_layer(area_id(), window) else { return false };
             layer != *timeline && rank(&layer) > rank(timeline) && ctx.memory(|memory| memory.area_rect(layer.id)).is_some_and(|rect| rect.contains(pos))
         })
     }
@@ -240,7 +223,15 @@ impl FilmcraftApp {
                 panels::keyboard::toggle_maximize(self, panel);
             }
         }
+        let middle_click = ctx.input(|input| input.pointer.button_clicked(egui::PointerButton::Middle));
         for action in output.actions {
+            // A middle click on the Timeline's tab closes its active sequence; the panel stays.
+            if middle_click && action == (Action::Close { panel: PanelKind::Timeline }) && self.session.state.active_sequence.is_some() {
+                if let Err(error) = self.session.execute("sequence.close", json!({})) {
+                    self.ui.status = error.to_string();
+                }
+                continue;
+            }
             if let Err(error) = self.dock_command(&ctx, action) {
                 self.ui.status = error;
             }
@@ -280,7 +271,6 @@ impl FilmcraftApp {
             });
         }
         let hits = DockArea::<PanelKind>::hit_rects(&ctx, area_id());
-        self.tab_strip_pointer(&ctx, &hits);
         self.register_dock_hits(&hits);
         panels::panel_menu_popup(self, ui);
         self.cancel_value_drag(ui.ctx());
@@ -310,67 +300,18 @@ impl FilmcraftApp {
                 }
                 _ => continue,
             };
-            found.push((entry, *rect));
+            found.push((entry, *rect, DockArea::hit_id(area_id(), hit)));
         }
-        for ((id, label), rect) in found {
+        // The widget id lets keyboard focus on a divider or grip map to its element (shortcuts
+        // stay live while one is focused).
+        for ((id, label), rect, widget) in found {
             self.auto.add(&id, rect, label);
-        }
-    }
-}
-
-impl FilmcraftApp {
-    /// Over a tab strip the wheel steps through the group's tabs (down = next, one tab per notch,
-    /// trackpad scrolling adding up to a notch, stopping at the ends), and a middle click on a tab
-    /// closes it; on the Timeline's tab it closes the active sequence and keeps the panel.
-    fn tab_strip_pointer(&mut self, ctx: &egui::Context, hits: &[(Hit<PanelKind>, Rect)]) {
-        let wheel_id = area_id().with("tab-wheel");
-        let pos = ctx.pointer_hover_pos();
-        let over = hits.iter().find_map(|(hit, rect)| match hit {
-            Hit::Tab(panel) | Hit::DragBar(panel) | Hit::Overflow(panel) if pos.is_some_and(|pos| rect.contains(pos)) => {
-                Some((matches!(hit, Hit::Tab(_)), *panel))
+            if let Some(element) = self.auto.elements.last_mut() {
+                element.widget_id = Some(format!("{:016x}", widget.value()));
+                element.response_id = Some(widget);
             }
-            _ => None,
-        });
-        let Some((on_tab, panel)) = over else {
-            ctx.data_mut(|data| data.remove::<f32>(wheel_id));
-            return;
-        };
-        if on_tab && ctx.input(|input| input.pointer.button_clicked(egui::PointerButton::Middle)) {
-            let result = if panel == PanelKind::Timeline && self.session.state.active_sequence.is_some() {
-                self.session.execute("sequence.close", json!({})).map(drop).map_err(|error| error.to_string())
-            } else {
-                self.dock_command(ctx, Action::Close { panel })
-            };
-            if let Err(error) = result {
-                self.ui.status = error;
-            }
-            return;
-        }
-        let Some((panels, active)) = group_of(&self.ui.dock, panel) else { return };
-        const NOTCH: f32 = 40.0;
-        let total = ctx.data(|data| data.get_temp::<f32>(wheel_id)).unwrap_or(0.0) + panels::timeline::wheel_input(ctx).delta.y;
-        let steps = (total / NOTCH).trunc();
-        ctx.data_mut(|data| data.insert_temp(wheel_id, total - steps * NOTCH));
-        let to = (active as i64).saturating_sub(steps as i64).clamp(0, (panels.len() as i64 - 1).max(0)) as usize;
-        if let Some(next) = panels.get(to).filter(|_| to != active).copied() {
-            let _ = self.dock_command(ctx, Action::Activate { panel: next });
-            self.ui.focused = next;
         }
     }
-}
-
-/// The panels of the tab group holding `panel`, and its active index.
-fn group_of(layout: &Layout<PanelKind>, panel: PanelKind) -> Option<(Vec<PanelKind>, usize)> {
-    fn find(node: &craft_ui::docking::Node<PanelKind>, panel: PanelKind) -> Option<(Vec<PanelKind>, usize)> {
-        match node {
-            craft_ui::docking::Node::Tabs { panels, active } if panels.contains(&panel) => Some((panels.clone(), *active)),
-            craft_ui::docking::Node::Split { first, second, .. } => find(first, panel).or_else(|| find(second, panel)),
-            _ => None,
-        }
-    }
-    layout.root.as_ref().and_then(|root| find(root, panel)).or_else(|| {
-        layout.floating.iter().flat_map(|window| &window.groups).find(|group| group.panels.contains(&panel)).map(|group| (group.panels.clone(), group.active))
-    })
 }
 
 fn dock_style(ui: &egui::Ui, t: &Tokens) -> DockStyle {
@@ -426,20 +367,16 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         if *panel == PanelKind::Timeline && self.seqs.open.is_empty() { self.seqs.label().into() } else { logical.into() }
     }
 
-    /// A floated panel is at most 420 by 320 points: panel bodies fill their frame, so their
-    /// drawn height says nothing about the size they need.
-    fn floating_size(&self, _panel: &PanelKind) -> Option<egui::Vec2> {
-        Some(vec2(420.0, 320.0))
-    }
-
     /// Tools and the audio meters are narrow strips without a tab strip.
     fn bare(&self, panel: &PanelKind) -> bool {
         panel.compact()
     }
 
     /// The ≡ menu, and the Timeline's sequence tabs before it while the Timeline is shown.
-    fn group_header_width(&self, _panels: &[PanelKind], active: &PanelKind, _floating: bool) -> f32 {
-        if *active == PanelKind::Timeline && !self.seqs.open.is_empty() { self.seq_width + MENU_W } else { MENU_W }
+    /// The sequence tabs take at most two thirds of the strip, so the group's own tabs keep room;
+    /// past that they scroll into their » list.
+    fn group_header_width(&self, _panels: &[PanelKind], active: &PanelKind, _floating: bool, strip_width: f32) -> f32 {
+        if *active == PanelKind::Timeline && !self.seqs.open.is_empty() { (self.seq_width + MENU_W).min(strip_width * 2.0 / 3.0).max(MENU_W) } else { MENU_W }
     }
 
     /// The ≡ panel menu of the group's shown panel; for the Timeline, its sequence tabs first.

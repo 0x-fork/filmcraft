@@ -1,6 +1,6 @@
 //! Shared docking preserves FilmCraft document state and legacy workspace files.
 
-use craft_ui::docking::{Action, Node, Placement, Zone};
+use craft_ui::docking::{Action, DockArea, Hit, Node, Placement, ResizeEdge, Zone};
 use craft_ui::layout::{SplitAxis, SplitSize};
 use egui::{Event, Modifiers, PointerButton, Rect, pos2, vec2};
 use egui_kittest::Harness;
@@ -241,9 +241,7 @@ fn real_panel_drag_merges_splits_floats_and_redocks_without_editing_documents() 
     assert!(h.state().ui.dock.floating[0].rect[2] > original[2] + 25.0);
     assert!(h.state().ui.dock.floating[0].rect[3] > original[3] + 15.0);
     action_log.push(action_state(&h, "resized"));
-    let grip_id = egui::Id::new("filmcraft-docking").with(("floating", PanelKind::Info)).with("resize");
-    h.ctx.memory_mut(|memory| memory.request_focus(grip_id));
-    step(&mut h);
+    let grip_id = DockArea::<PanelKind>::hit_id(filmcraft_ui_egui::dock_area_id(), &Hit::Resize(PanelKind::Info, ResizeEdge::BottomRight));
     assert_eq!(h.ctx.memory(|memory| memory.focused()), Some(grip_id));
     let before_keys = h.state().ui.dock.floating[0].rect;
     for key in [egui::Key::ArrowRight, egui::Key::ArrowDown] {
@@ -535,14 +533,13 @@ fn narration_selection_reveals_covered_floating_tts_once_without_editing_the_pro
             step(&mut h);
         }
     }
-    let layer = |panel: PanelKind| egui::LayerId::new(egui::Order::Middle, egui::Id::new("filmcraft-docking").with(("floating", panel)));
     let covered = rect(&h, "panel.TextToSpeech").center();
     assert!(rect(&h, "panel.Info").contains(covered));
-    ctx.move_to_top(layer(PanelKind::Info));
+    ctx.move_to_top(window_layer(&h, PanelKind::Info));
     for _ in 0..3 {
         step(&mut h);
     }
-    assert_eq!(ctx.layer_id_at(covered), Some(layer(PanelKind::Info)), "precondition: Info really covers TTS");
+    assert_eq!(ctx.layer_id_at(covered), Some(window_layer(&h, PanelKind::Info)), "precondition: Info really covers TTS");
     h.state_mut().session.state.selection = vec![clip.id];
     for _ in 0..4 {
         step(&mut h);
@@ -551,29 +548,29 @@ fn narration_selection_reveals_covered_floating_tts_once_without_editing_the_pro
     assert_eq!(draft.text, narration.text);
     assert_eq!(draft.pace, narration.pace);
     assert_eq!(draft.loaded_from, Some((clip.id.0, clip.item.0)));
-    assert_eq!(ctx.layer_id_at(covered), Some(layer(PanelKind::TextToSpeech)), "narration selection must bring its floating editor forward");
+    assert_eq!(ctx.layer_id_at(covered), Some(window_layer(&h, PanelKind::TextToSpeech)), "narration selection must bring its floating editor forward");
     assert_eq!(h.state().ui.focused, PanelKind::TextToSpeech);
     assert!(!h.state().ui.dock.docked(PanelKind::TextToSpeech));
     assert_eq!(h.state().ui.dock.floating.iter().flat_map(|group| group.panels()).filter(|panel| **panel == PanelKind::TextToSpeech).count(), 1);
     assert!(std::sync::Arc::ptr_eq(&project, &h.state().session.project));
     // A reveal is one-shot: drawing the selected narration must not steal stacking
     // from another pane that the user subsequently brings forward.
-    ctx.move_to_top(layer(PanelKind::Info));
+    ctx.move_to_top(window_layer(&h, PanelKind::Info));
     for _ in 0..4 {
         step(&mut h);
     }
-    assert_eq!(ctx.layer_id_at(covered), Some(layer(PanelKind::Info)));
+    assert_eq!(ctx.layer_id_at(covered), Some(window_layer(&h, PanelKind::Info)));
     assert_eq!(h.state().ui.tts, draft);
     menus::invoke(h.state_mut(), &ctx, "window.panel.TextToSpeech", json!({})).unwrap();
     for _ in 0..4 {
         step(&mut h);
     }
-    assert_eq!(ctx.layer_id_at(covered), Some(layer(PanelKind::TextToSpeech)));
+    assert_eq!(ctx.layer_id_at(covered), Some(window_layer(&h, PanelKind::TextToSpeech)));
     assert_eq!(h.state().ui.tts, draft);
     assert!(std::sync::Arc::ptr_eq(&project, &h.state().session.project));
     // Replacing the workspace cancels a queued reveal before the next render,
     // even when the destination happens to contain the same floating panel IDs.
-    ctx.move_to_top(layer(PanelKind::Info));
+    ctx.move_to_top(window_layer(&h, PanelKind::Info));
     for _ in 0..3 {
         step(&mut h);
     }
@@ -588,7 +585,7 @@ fn narration_selection_reveals_covered_floating_tts_once_without_editing_the_pro
     for _ in 0..4 {
         step(&mut h);
     }
-    assert_eq!(ctx.layer_id_at(covered), Some(layer(PanelKind::Info)));
+    assert_eq!(ctx.layer_id_at(covered), Some(window_layer(&h, PanelKind::Info)));
     assert_eq!(h.state().ui.tts, draft);
     assert!(std::sync::Arc::ptr_eq(&project, &h.state().session.project));
 }
@@ -659,4 +656,10 @@ fn shared_dock_commands_and_filmcraft_names_move_panels() {
     menus::invoke(&mut app, &ctx, "window.panel.close", json!({"panel": "Info"})).unwrap();
     assert!(!app.ui.dock.contains(&PanelKind::Info));
     assert!(menus::invoke(&mut app, &ctx, "window.panel.move", json!({"panel": "Info", "anchor": "Nowhere"})).is_err());
+}
+
+/// The layer of the floating window holding `panel`.
+fn window_layer(h: &Harness<'_, FilmcraftApp>, panel: PanelKind) -> egui::LayerId {
+    let window = h.state().ui.dock.floating.iter().find(|window| window.contains(&panel)).unwrap();
+    DockArea::floating_layer(filmcraft_ui_egui::dock_area_id(), window).unwrap()
 }

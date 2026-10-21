@@ -11,6 +11,11 @@ use craft_ui::layout::{SplitAxis, SplitSize};
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
 
+/// Width of the Tools panel in the factory layouts.
+pub const TOOLS_WIDTH: f32 = 64.0;
+/// Width of the Audio Meters in the factory layouts.
+pub const METERS_WIDTH: f32 = 116.0;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PanelKind {
     Project,
@@ -131,6 +136,14 @@ impl PanelKind {
     /// Narrow chrome-less panels (no tab strip; a slim grip instead).
     pub fn compact(self) -> bool {
         matches!(self, PanelKind::Tools | PanelKind::AudioMeters)
+    }
+    /// The widest the panel may be: Tools and the Audio Meters stay at their factory widths.
+    pub fn max_width(self) -> Option<f32> {
+        match self {
+            PanelKind::Tools => Some(TOOLS_WIDTH),
+            PanelKind::AudioMeters => Some(METERS_WIDTH),
+            _ => None,
+        }
     }
 }
 
@@ -369,7 +382,7 @@ pub fn workspace(name: &str) -> Layout {
 fn workspace_root(name: &str) -> Node<PanelKind> {
     use PanelKind::*;
     use SplitSize::{FixedFirst as FixedA, FixedSecond as FixedB, Ratio};
-    let bottom_editing = || hsplit(FixedA(64.0), tabs(&[Tools], 0), hsplit(FixedB(116.0), tabs(&[Timeline], 0), tabs(&[AudioMeters], 0)));
+    let bottom_editing = || hsplit(FixedA(TOOLS_WIDTH), tabs(&[Tools], 0), hsplit(FixedB(METERS_WIDTH), tabs(&[Timeline], 0), tabs(&[AudioMeters], 0)));
     match name {
         "Assembly" => vsplit(
             Ratio(0.52),
@@ -437,7 +450,7 @@ fn workspace_root(name: &str) -> Node<PanelKind> {
             hsplit(
                 Ratio(0.29),
                 tabs(&[Project, MediaBrowser, Libraries, Info, Effects, Markers, History], 0),
-                hsplit(FixedA(64.0), tabs(&[Tools], 0), hsplit(FixedB(116.0), tabs(&[Timeline], 0), tabs(&[AudioMeters], 0))),
+                hsplit(FixedA(TOOLS_WIDTH), tabs(&[Tools], 0), hsplit(FixedB(METERS_WIDTH), tabs(&[Timeline], 0), tabs(&[AudioMeters], 0))),
             ),
         ),
     }
@@ -494,7 +507,7 @@ impl LayoutExt for Layout {
             match n {
                 Node::Split { first, second, .. } => beside_meters(first) || beside_meters(second),
                 Node::Tabs { panels, .. } if panels.as_slice() == [PanelKind::AudioMeters] => {
-                    *n = hsplit(SplitSize::FixedSecond(116.0), tabs(&[PanelKind::Timeline], 0), tabs(&[PanelKind::AudioMeters], 0));
+                    *n = hsplit(SplitSize::FixedSecond(METERS_WIDTH), tabs(&[PanelKind::Timeline], 0), tabs(&[PanelKind::AudioMeters], 0));
                     true
                 }
                 _ => false,

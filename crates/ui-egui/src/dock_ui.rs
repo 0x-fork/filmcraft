@@ -4,7 +4,7 @@
 //! sequence tabs, and maps its control commands onto
 //! craft-ui's `DockCommand`.
 
-use craft_ui::docking::{Action, Divider, DockArea, DockCommand, DockContent, DockEvent, DockStyle, FloatSpace, Hit, Layout, Profile, ResizeEdge, Workspace};
+use craft_ui::docking::{Action, Divider, DockArea, DockCommand, DockContent, DockEvent, DockStyle, FloatSpace, Hit, Layout, PanelLimits, Profile, ResizeEdge, Workspace};
 use egui::{Rect, Sense, Stroke, StrokeKind, vec2};
 use serde_json::{Value, json};
 
@@ -417,6 +417,14 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         if self.app.ui.focused == *panel {
             ui.painter().rect_stroke(frame, 0.0, Stroke::new(1.0, t.focus), StrokeKind::Inside);
         }
+    }
+
+    fn limits(&self, panel: &PanelKind) -> PanelLimits {
+        let mut limits = PanelLimits::default();
+        if let Some(width) = panel.max_width() {
+            limits.max.x = width;
+        }
+        limits
     }
 
     fn logical_label(&self, panel: &PanelKind) -> String {

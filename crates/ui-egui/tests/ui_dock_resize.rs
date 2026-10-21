@@ -206,3 +206,36 @@ fn space_plays_while_a_floating_group_divider_has_focus() {
     press(&mut h, Key::Space);
     assert!(!h.state().playback.playing);
 }
+
+/// Tools keeps its factory width: dragging the divider beside it does not widen it.
+#[test]
+fn the_divider_beside_tools_cannot_widen_it() {
+    let app = FilmcraftApp::new(Session::default());
+    let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(move |_| app);
+    frames(&mut h, 4);
+    h.state_mut().ui.dock = craft_ui::docking::Layout {
+        root: Some(craft_ui::docking::Node::Split {
+            axis: craft_ui::layout::SplitAxis::Horizontal,
+            size: craft_ui::layout::SplitSize::FixedFirst(filmcraft_ui_egui::dock::TOOLS_WIDTH),
+            first: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Tools], active: 0 }),
+            second: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Timeline], active: 0 }),
+        }),
+        floating: vec![],
+    };
+    frames(&mut h, 3);
+    let element = h.state().auto.find("dock.gutter.").unwrap();
+    let from = Rect::from_min_size(pos2(element.rect[0], element.rect[1]), vec2(element.rect[2], element.rect[3])).center();
+    h.event(Event::PointerMoved(from));
+    step(&mut h);
+    h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    step(&mut h);
+    for offset in [10.0, 20.0, 30.0, 40.0] {
+        h.event(Event::PointerMoved(from + vec2(offset, 0.0)));
+        step(&mut h);
+    }
+    h.event(Event::PointerButton { pos: from + vec2(40.0, 0.0), button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    frames(&mut h, 3);
+    assert!(first_size(&h) <= filmcraft_ui_egui::dock::TOOLS_WIDTH, "Tools widened to {}", first_size(&h));
+    let tools = h.state().auto.find("panel.Tools").unwrap();
+    assert!(tools.rect[2] <= filmcraft_ui_egui::dock::TOOLS_WIDTH, "Tools drawn {} wide", tools.rect[2]);
+}

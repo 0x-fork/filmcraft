@@ -818,3 +818,21 @@ fn close_panel_group_keeps_the_timeline_and_closes_the_sequence() {
     assert!(state.ui.dock.is_visible(PanelKind::Timeline), "the Timeline closed");
     assert!(!state.ui.dock.contains(&PanelKind::Info), "Info stays open");
 }
+
+/// With the header in the macOS title-bar strip, a floating window saved at the top of the
+/// viewport is drawn below the strip, where a press on it cannot move the app window.
+#[test]
+fn a_floating_panel_stays_out_of_the_integrated_titlebar() {
+    let mut app = FilmcraftApp::new(Session::default());
+    app.ui.dock = layout();
+    app.integrated_titlebar = true;
+    let ctx = egui::Context::default();
+    menus::invoke(&mut app, &ctx, "window.floatPanel", json!({"panel": "Info", "rect": [45, 65, 420, 320]})).unwrap();
+    app.ui.dock.floating.iter_mut().find(|window| window.contains(&PanelKind::Info)).unwrap().rect[1] = 0.0;
+    let mut h = Harness::builder().with_size(vec2(1200.0, 760.0)).build_eframe(move |_| app);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let drawn = h.ctx.memory(|memory| memory.area_rect(window_layer(&h, PanelKind::Info).id)).expect("Info is drawn floating");
+    assert!(drawn.min.y >= filmcraft_ui_egui::header::HEIGHT, "drawn at {drawn:?}");
+}

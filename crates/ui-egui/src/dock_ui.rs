@@ -128,9 +128,19 @@ impl FilmcraftApp {
             self.show_panel(*panel);
             return Ok(());
         }
-        let space = craft_ui::docking::float_space(ctx, area_id()).unwrap_or_else(|| FloatSpace::new(ctx.content_rect()));
+        let space = craft_ui::docking::float_space(ctx, area_id()).unwrap_or_else(|| FloatSpace::new(self.float_bounds(ctx)));
         let actions = command.to_actions(&Workspace::new(self.ui.dock.clone()), false, &space).map_err(|error| error.to_string())?;
         self.apply_dock_all(actions)
+    }
+
+    /// Where floating windows may go. With `integrated_titlebar` the header sits in the macOS
+    /// title-bar strip, where a press on a floating window would move the whole app window.
+    pub(crate) fn float_bounds(&self, ctx: &egui::Context) -> Rect {
+        let mut bounds = ctx.content_rect();
+        if self.integrated_titlebar {
+            bounds.min.y += crate::header::HEIGHT;
+        }
+        bounds
     }
 
     pub fn apply_dock(&mut self, action: Action<PanelKind>) -> Result<(), String> {
@@ -210,7 +220,7 @@ impl FilmcraftApp {
             active: self.session.state.active_sequence.map(|id| id.0),
         };
         let style = dock_style(ui, &t);
-        let mut area = DockArea::new(area_id()).maximized(self.ui.keys.maximized.filter(|panel| self.ui.dock.is_docked(*panel)));
+        let mut area = DockArea::new(area_id()).float_bounds(self.float_bounds(&ctx)).maximized(self.ui.keys.maximized.filter(|panel| self.ui.dock.is_docked(*panel)));
         if let Some(panel) = self.pending_panel_raise.take() {
             area = area.raise_panel(panel);
         }

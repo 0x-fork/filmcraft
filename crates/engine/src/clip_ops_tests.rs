@@ -1108,4 +1108,11 @@ fn applied_transform_centres_its_points_in_the_clip_picture() {
     s.execute("effects.setParam", json!({"clip": c, "effect": "transform", "param": "anchor", "value": [10.0, 20.0]})).unwrap();
     s.execute("effects.resetParam", json!({"clip": c, "effect": "transform", "param": "anchor"})).unwrap();
     assert_eq!(point(&s, "anchor"), centre);
+    // intrinsic effects stay centred in the sequence frame when applied to a smaller clip
+    let q = s.active_sequence().unwrap();
+    let frame_centre = filmcraft_geom::Vec2::new(f64::from(q.settings.width) / 2.0, f64::from(q.settings.height) / 2.0);
+    s.execute("effects.apply", json!({"clips": [c], "effect": "motion"})).unwrap();
+    for m in clip(&s, c).effects.iter().filter(|e| e.effect == "motion") {
+        assert_eq!(m.param("position").unwrap().value.as_vec2().unwrap(), frame_centre);
+    }
 }

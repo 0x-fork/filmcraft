@@ -2970,7 +2970,9 @@ fn build() -> Vec<CommandSpec> {
                     for i in t.items.iter_mut().filter(|i| clips.contains(&i.id)) {
                         let mut inst = def.instance();
                         let size = source_sizes.get(&i.id).copied().unwrap_or((fw, fh));
-                        resolve_auto_points(&mut inst, size, size);
+                        // intrinsic effects (Motion) are laid out in the sequence frame, as `reset_params` does
+                        let frame = if def.intrinsic { (fw, fh) } else { size };
+                        resolve_auto_points(&mut inst, frame, size);
                         // standard effects go before the intrinsic ones (render order)
                         let pos = i.effects.iter().position(|e| e.def().is_some_and(|d| d.intrinsic)).unwrap_or(i.effects.len());
                         let pos = if is_audio { i.effects.len() } else { pos };

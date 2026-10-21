@@ -1821,7 +1821,8 @@ impl FilmcraftApp {
         self.handle_drops(&ctx);
         if let Some(rx) = self.command_inbox.take() {
             while let Ok(id) = rx.try_recv() {
-                if self.control_input_only {
+                // control-only mode ignores native menu commands, but Quit stays available (#1943)
+                if self.control_input_only && id != "app.quit" {
                     continue;
                 }
                 if let Err(e) = menus::invoke(self, &ctx, &id, json!({})) {

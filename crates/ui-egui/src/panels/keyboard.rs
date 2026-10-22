@@ -258,7 +258,7 @@ fn panel_under_pointer(app: &FilmcraftApp, ctx: &egui::Context) -> Option<PanelK
 /// Visible panels in layout order (the active tab of each frame).
 fn visible_panels(app: &FilmcraftApp) -> Vec<PanelKind> {
     use crate::dock::LayoutExt as _;
-    app.ui.dock.visible_panels().into_iter().filter(|p| !p.compact()).collect()
+    app.ui.dock.visible_panels()
 }
 
 fn cycle_panel(app: &mut FilmcraftApp, next: bool) -> Value {

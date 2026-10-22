@@ -115,10 +115,9 @@ fn background_divider(isolated: bool) {
     d.frames(2, true);
     d.h.input_mut().events.push(Event::WindowFocused(false));
     d.ok("ui.key", json!({"key":"ArrowRight"}), false);
-    assert!(
-        matches!(d.h.state().ui.dock.root, Some(craft_ui::docking::Node::Split { size: craft_ui::layout::SplitSize::FixedFirst(408.0), .. })),
-        "control input must work without native activation"
-    );
+    d.frames(2, false);
+    let width = d.h.state().auto.find("panel.Project").unwrap().rect[2];
+    assert!((width - 408.0).abs() < 0.5, "control input must work without native activation: Project is {width} wide");
     assert_eq!(d.h.state().session.state.playheads, before_playheads);
     assert!(Arc::ptr_eq(&d.h.state().session.project, &before_project));
     assert!(!d.h.state().playback.playing);

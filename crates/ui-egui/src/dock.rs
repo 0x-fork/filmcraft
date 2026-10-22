@@ -1,5 +1,5 @@
-//! FilmCraft's panels and workspaces. craft-ui's docking (Frame profile) owns the frame tree,
-//! the tab strips, floating windows and gestures (`dock_ui.rs` draws it); this module names the
+//! FilmCraft's panels and workspaces. craft-ui's docking owns the frame tree, the tab strips,
+//! floating windows and gestures (`dock_ui.rs` draws it); this module names the
 //! panels, builds the built-in workspaces and draws the Timeline's sequence tabs.
 
 use egui::{Align2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
@@ -10,11 +10,6 @@ use craft_ui::layout::{SplitAxis, SplitSize};
 
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
-
-/// Width of the Tools panel in the factory layouts.
-pub const TOOLS_WIDTH: f32 = 64.0;
-/// Width of the Audio Meters in the factory layouts.
-pub const METERS_WIDTH: f32 = 116.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PanelKind {
@@ -130,18 +125,6 @@ impl PanelKind {
             PanelKind::Effects => Some("Shift+7"),
             PanelKind::MediaBrowser => Some("Shift+8"),
             PanelKind::AudioTrackMixer => Some("Shift+6"),
-            _ => None,
-        }
-    }
-    /// Narrow chrome-less panels (no tab strip; a slim grip instead).
-    pub fn compact(self) -> bool {
-        matches!(self, PanelKind::Tools | PanelKind::AudioMeters)
-    }
-    /// The widest the panel may be: Tools and the Audio Meters stay at their factory widths.
-    pub fn max_width(self) -> Option<f32> {
-        match self {
-            PanelKind::Tools => Some(TOOLS_WIDTH),
-            PanelKind::AudioMeters => Some(METERS_WIDTH),
             _ => None,
         }
     }
@@ -381,8 +364,10 @@ pub fn workspace(name: &str) -> Layout {
 
 fn workspace_root(name: &str) -> Node<PanelKind> {
     use PanelKind::*;
-    use SplitSize::{FixedFirst as FixedA, FixedSecond as FixedB, Ratio};
-    let bottom_editing = || hsplit(FixedA(TOOLS_WIDTH), tabs(&[Tools], 0), hsplit(FixedB(METERS_WIDTH), tabs(&[Timeline], 0), tabs(&[AudioMeters], 0)));
+    use SplitSize::Ratio;
+    // Tools | Timeline | Audio Meters. The ratios start Tools about 64 pt and the meters about
+    // 116 pt wide in a 1600 pt window; all three resize like any other group.
+    let bottom_editing = |tools: f32, timeline: f32| hsplit(Ratio(tools), tabs(&[Tools], 0), hsplit(Ratio(timeline), tabs(&[Timeline], 0), tabs(&[AudioMeters], 0)));
     match name {
         "Assembly" => vsplit(
             Ratio(0.52),
@@ -391,41 +376,41 @@ fn workspace_root(name: &str) -> Node<PanelKind> {
                 tabs(&[Project, MediaBrowser, Libraries, Info, Effects, Markers, History], 0),
                 hsplit(Ratio(0.5), tabs(&[Source, EffectControls, AudioClipMixer, Metadata], 0), tabs(&[Program], 0)),
             ),
-            bottom_editing(),
+            bottom_editing(0.04, 0.92),
         ),
         "Color" => hsplit(
-            FixedB(340.0),
+            Ratio(0.79),
             vsplit(
                 Ratio(0.58),
                 hsplit(Ratio(0.42), tabs(&[LumetriScopes, Source, EffectControls], 0), tabs(&[Program], 0)),
-                hsplit(Ratio(0.3), tabs(&[Project, Info, Markers, History], 0), bottom_editing()),
+                hsplit(Ratio(0.3), tabs(&[Project, Info, Markers, History], 0), bottom_editing(0.07, 0.86)),
             ),
             tabs(&[LumetriColor, Effects], 0),
         ),
         "Effects" => hsplit(
-            FixedB(320.0),
+            Ratio(0.8),
             vsplit(
                 Ratio(0.5),
                 hsplit(Ratio(0.5), tabs(&[Source, EffectControls, AudioClipMixer], 1), tabs(&[Program], 0)),
-                hsplit(Ratio(0.3), tabs(&[Project, MediaBrowser, Info, Markers, History], 0), bottom_editing()),
+                hsplit(Ratio(0.3), tabs(&[Project, MediaBrowser, Info, Markers, History], 0), bottom_editing(0.07, 0.86)),
             ),
             vsplit(Ratio(0.5), tabs(&[Effects], 0), tabs(&[EssentialGraphics], 0)),
         ),
         "Audio" => hsplit(
-            FixedB(320.0),
+            Ratio(0.8),
             vsplit(
                 Ratio(0.5),
                 hsplit(Ratio(0.5), tabs(&[AudioTrackMixer, Source, AudioClipMixer, EffectControls], 0), tabs(&[Program], 0)),
-                hsplit(Ratio(0.3), tabs(&[Project, MediaBrowser, Effects, Markers, History], 0), bottom_editing()),
+                hsplit(Ratio(0.3), tabs(&[Project, MediaBrowser, Effects, Markers, History], 0), bottom_editing(0.07, 0.86)),
             ),
             tabs(&[EssentialSound, TextToSpeech], 0),
         ),
         "Captions and Graphics" => hsplit(
-            FixedB(330.0),
+            Ratio(0.79),
             vsplit(
                 Ratio(0.5),
                 hsplit(Ratio(0.4), tabs(&[Text, Source, EffectControls], 0), tabs(&[Program], 0)),
-                hsplit(Ratio(0.3), tabs(&[Project, MediaBrowser, Libraries], 0), bottom_editing()),
+                hsplit(Ratio(0.3), tabs(&[Project, MediaBrowser, Libraries], 0), bottom_editing(0.07, 0.86)),
             ),
             tabs(&[EssentialGraphics, Properties], 0),
         ),
@@ -436,21 +421,21 @@ fn workspace_root(name: &str) -> Node<PanelKind> {
                 tabs(&[Source, EffectControls, AudioClipMixer, Metadata, LumetriScopes, Text], 0),
                 hsplit(Ratio(0.6), tabs(&[Program], 0), tabs(&[LumetriColor, EssentialGraphics, EssentialSound, TextToSpeech, Properties, AudioTrackMixer], 0)),
             ),
-            hsplit(Ratio(0.26), tabs(&[Project, MediaBrowser, Libraries, Info, Effects, Markers, History], 0), bottom_editing()),
+            hsplit(Ratio(0.26), tabs(&[Project, MediaBrowser, Libraries, Info, Effects, Markers, History], 0), bottom_editing(0.055, 0.9)),
         ),
         // Editing (default), Learning, Review — Premiere 26 factory layout:
         // top: Source group | Program | Properties; bottom: Project group | Tools | Timeline | Meters.
         _ => vsplit(
             Ratio(0.57),
             hsplit(
-                FixedB(450.0),
+                Ratio(0.72),
                 hsplit(Ratio(0.5), tabs(&[Source, EffectControls, AudioClipMixer, Metadata], 0), tabs(&[Program], 0)),
                 tabs(&[Properties, EssentialGraphics, Text], 0),
             ),
             hsplit(
                 Ratio(0.29),
                 tabs(&[Project, MediaBrowser, Libraries, Info, Effects, Markers, History], 0),
-                hsplit(FixedA(TOOLS_WIDTH), tabs(&[Tools], 0), hsplit(FixedB(METERS_WIDTH), tabs(&[Timeline], 0), tabs(&[AudioMeters], 0))),
+                bottom_editing(0.06, 0.89),
             ),
         ),
     }
@@ -495,7 +480,9 @@ impl LayoutExt for Layout {
         if let Some(root) = &self.root {
             walk(root, &mut out);
         }
-        out.extend(self.floating.iter().flat_map(|window| window.groups.iter().filter_map(|group| group.panels.get(group.active).copied())));
+        for window in &self.floating {
+            walk(&window.root, &mut out);
+        }
         out
     }
 
@@ -507,7 +494,7 @@ impl LayoutExt for Layout {
             match n {
                 Node::Split { first, second, .. } => beside_meters(first) || beside_meters(second),
                 Node::Tabs { panels, .. } if panels.as_slice() == [PanelKind::AudioMeters] => {
-                    *n = hsplit(SplitSize::FixedSecond(METERS_WIDTH), tabs(&[PanelKind::Timeline], 0), tabs(&[PanelKind::AudioMeters], 0));
+                    *n = hsplit(SplitSize::Ratio(0.85), tabs(&[PanelKind::Timeline], 0), tabs(&[PanelKind::AudioMeters], 0));
                     true
                 }
                 _ => false,
@@ -760,6 +747,22 @@ mod tests {
             d.validate().unwrap();
             assert!(d.contains(&PanelKind::Timeline), "{w}");
             assert!(d.contains(&PanelKind::Program), "{w}");
+        }
+    }
+
+    fn fixed_splits(node: &Node<PanelKind>) -> usize {
+        match node {
+            Node::Split { size, first, second, .. } => usize::from(!matches!(size, SplitSize::Ratio(_))) + fixed_splits(first) + fixed_splits(second),
+            _ => 0,
+        }
+    }
+
+    /// Every group of a built-in workspace resizes with the window: no split keeps a fixed size.
+    #[test]
+    fn workspaces_use_ratio_splits() {
+        for w in WORKSPACES {
+            let layout = workspace(w);
+            assert_eq!(layout.root.as_ref().map_or(0, fixed_splits), 0, "{w}");
         }
     }
 

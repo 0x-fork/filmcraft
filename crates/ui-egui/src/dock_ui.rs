@@ -1,12 +1,10 @@
-//! FilmCraft's panels in craft-ui's shared docking, Frame profile. craft-ui draws the frames, tab
-//! strips, floating windows and drag previews and owns the gestures; FilmCraft draws the panel
+//! FilmCraft's panels in craft-ui's shared docking. craft-ui draws the frames, tab strips,
+//! floating windows and drag previews and owns the gestures; FilmCraft draws the panel
 //! bodies, the ≡ panel menu, the panel items of each tab's context menu and the Timeline's
 //! sequence tabs, and maps its control commands onto
 //! craft-ui's `DockCommand`.
 
-use craft_ui::docking::{
-    Action, Divider, DockArea, DockCommand, DockContent, DockEvent, DockStyle, FloatSpace, Hit, Layout, PanelLimits, Profile, ResizeEdge, Workspace,
-};
+use craft_ui::docking::{Action, Divider, DockArea, DockCommand, DockContent, DockEvent, DockStyle, FloatSpace, Hit, Layout, ResizeEdge, Workspace};
 use egui::{Rect, Sense, Stroke, StrokeKind, vec2};
 use serde_json::{Value, json};
 
@@ -25,8 +23,6 @@ fn bodies_id() -> egui::Id {
     area_id().with("bodies")
 }
 
-/// Height of the move grip above a panel without a tab strip.
-const GRIP_H: f32 = 8.0;
 /// Width of the ≡ panel menu button at the end of each tab strip.
 const MENU_W: f32 = 26.0;
 
@@ -318,9 +314,11 @@ impl FilmcraftApp {
 
     /// Automation ids for craft-ui's gesture sources: `panel.tab.<Panel>`, `panel.drag.<Panel>`
     /// (the group's drag bar), `panel.tabs.more.<Panel>`, `panel.float.<n>.move` and `.resize`,
-    /// `dock.gutter.<path>` (`a`/`b` per split level), and `dock.gutter.group.<Panel>`,
-    /// `.stack.<Panel>` and `.column.<Panel>` for the dividers below a group or accordion entry and
-    /// beside a column, named by the panel they hold first.
+    /// `dock.gutter.<path>` (`a`/`b` per split level), `dock.corner.<outer path>.<inner path>`
+    /// where two dividers meet, the same inside floating window `n` as `panel.float.<n>.gutter.…`
+    /// and `panel.float.<n>.corner.…`, and `dock.gutter.group.<Panel>`, `.stack.<Panel>` and
+    /// `.column.<Panel>` for the dividers below a group or accordion entry and beside a column,
+    /// named by the panel they hold first.
     fn register_dock_hits(&mut self, hits: &[(Hit<PanelKind>, Rect)]) {
         let window = |panel: &PanelKind| self.ui.dock.floating.iter().position(|window| window.contains(panel));
         let mut found = Vec::new();
@@ -338,12 +336,19 @@ impl FilmcraftApp {
                     Some(index) => (format!("panel.float.{index}.resize.{edge:?}"), "Resize floating panel"),
                     None => continue,
                 },
-                Hit::Divider(Divider::Split(path)) => {
-                    (format!("dock.gutter.{}", path.iter().map(|second| if *second { 'b' } else { 'a' }).collect::<String>()), "gutter")
-                }
+                Hit::Divider(Divider::Split(path)) => (format!("dock.gutter.{}", path_id(path)), "gutter"),
                 Hit::Divider(Divider::Group(panel)) => (format!("dock.gutter.group.{}", panel.id()), "gutter"),
                 Hit::Divider(Divider::Stack(panel)) => (format!("dock.gutter.stack.{}", panel.id()), "gutter"),
                 Hit::Divider(Divider::Column(panel)) => (format!("dock.gutter.column.{}", panel.id()), "gutter"),
+                Hit::Divider(Divider::Intersection(outer, inner)) => (format!("dock.corner.{}.{}", path_id(outer), path_id(inner)), "gutter corner"),
+                Hit::Divider(Divider::WindowSplit(panel, path)) => match window(panel) {
+                    Some(index) => (format!("panel.float.{index}.gutter.{}", path_id(path)), "gutter"),
+                    None => continue,
+                },
+                Hit::Divider(Divider::WindowIntersection(panel, outer, inner)) => match window(panel) {
+                    Some(index) => (format!("panel.float.{index}.corner.{}.{}", path_id(outer), path_id(inner)), "gutter corner"),
+                    None => continue,
+                },
                 _ => continue,
             };
             found.push((entry, *rect, DockArea::hit_id(area_id(), hit)));
@@ -360,9 +365,28 @@ impl FilmcraftApp {
     }
 }
 
+/// A split path as `a`/`b` per level (first/second child).
+fn path_id(path: &[bool]) -> String {
+    path.iter().map(|second| if *second { 'b' } else { 'a' }).collect()
+}
+
+/// FilmCraft's window is all groups: drops on all four window edges, Ctrl/Cmd-drag undocks, a
+/// release over no target cancels, and a floating window's title bar only moves it.
 fn dock_style(ui: &egui::Ui, t: &Tokens) -> DockStyle {
     let mut style = DockStyle::from_ui(ui);
-    style.profile = Profile::Frame;
+    style.side_edge_zones = true;
+    style.new_dock_zones = false;
+    style.maximize_item = true;
+    style.close_others_item = true;
+    style.command_press_floats = true;
+    style.float_on_empty_drop = false;
+    style.title_bar_docks = false;
+    style.float_hint = true;
+    style.wheel_selects_tabs = true;
+    style.middle_click_closes_tabs = true;
+    style.float_label = "Undock Panel".into();
+    style.float_group_label = "Undock Panel Group".into();
+    style.close_group_label = "Close Panel Group".into();
     style.tab_height = t.tab_h;
     style.gap = t.gap;
     style.background = t.panel_bg;
@@ -395,20 +419,7 @@ impl DockContent<PanelKind> for FilmContent<'_> {
     fn body(&mut self, ui: &mut egui::Ui, panel: &PanelKind) {
         let t = self.tokens;
         let frame = ui.max_rect();
-        let mut rect = frame;
-        // Tools and the audio meters have no tab strip: a slim grip on top moves them.
-        if panel.compact() {
-            let grip = Rect::from_min_size(rect.min, vec2(rect.width(), GRIP_H.min(rect.height())));
-            let response = ui.interact(grip, egui::Id::new(("panel-grip", panel.id())), Sense::drag()).on_hover_cursor(egui::CursorIcon::Grab);
-            self.app.auto.add_response(&format!("panel.drag.{}", panel.id()), &response, "Move panel");
-            for dx in [-4.0, 0.0, 4.0] {
-                ui.painter().circle_filled(grip.center() + vec2(dx, 0.0), 1.0, if response.hovered() { t.tab_text_active } else { t.text_faint });
-            }
-            if response.drag_started() {
-                craft_ui::docking::begin_drag(ui.ctx(), area_id(), *panel, frame);
-            }
-            rect.min.y = grip.max.y;
-        }
+        let rect = frame;
         self.bodies.push((*panel, rect, ui.layer_id()));
         self.app.auto.add(&format!("panel.{}", panel.id()), rect, panel.title());
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).id_salt(("panel", panel.id())));
@@ -420,14 +431,6 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         if self.app.ui.focused == *panel {
             ui.painter().rect_stroke(frame, 0.0, Stroke::new(1.0, t.focus), StrokeKind::Inside);
         }
-    }
-
-    fn limits(&self, panel: &PanelKind) -> PanelLimits {
-        let mut limits = PanelLimits::default();
-        if let Some(width) = panel.max_width() {
-            limits.max.x = width;
-        }
-        limits
     }
 
     fn logical_label(&self, panel: &PanelKind) -> String {
@@ -465,11 +468,6 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         if close {
             ui.close();
         }
-    }
-
-    /// Tools and the audio meters are narrow strips without a tab strip.
-    fn bare(&self, panel: &PanelKind) -> bool {
-        panel.compact()
     }
 
     /// The ≡ menu, and the Timeline's sequence tabs before it while the Timeline is shown.

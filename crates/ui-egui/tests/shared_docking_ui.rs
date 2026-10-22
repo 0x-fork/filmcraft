@@ -39,7 +39,7 @@ impl Docked for Layout {
 fn layout() -> Layout {
     root(split(
         false,
-        SplitSize::FixedFirst(400.0),
+        SplitSize::Ratio(0.3),
         tabs(&[PanelKind::Project, PanelKind::Info, PanelKind::History], 1),
         tabs(&[PanelKind::Source, PanelKind::Program], 1),
     ))
@@ -334,9 +334,28 @@ fn dropping_on_the_window_edge_docks_beside_the_whole_workspace() {
             false,
             SplitSize::Ratio(0.25),
             tabs(&[PanelKind::Info], 0),
-            split(false, SplitSize::FixedFirst(400.0), tabs(&[PanelKind::Project, PanelKind::History], 1), tabs(&[PanelKind::Source, PanelKind::Program], 1)),
+            split(false, SplitSize::Ratio(0.3), tabs(&[PanelKind::Project, PanelKind::History], 1), tabs(&[PanelKind::Source, PanelKind::Program], 1)),
         ))
     );
+}
+
+/// A release over no drop target (the menu bar, the gap between two groups) cancels the drag:
+/// nothing floats and nothing moves. Only Ctrl/Cmd or leaving the window floats.
+#[test]
+fn a_release_over_no_target_cancels_the_drag() {
+    let mut app = FilmcraftApp::new(Session::default());
+    app.ui.dock = layout();
+    let mut h = Harness::builder().with_size(vec2(1200.0, 760.0)).build_eframe(move |_| app);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    let before = h.state().ui.dock.clone();
+    let info = rect(&h, "panel.Info");
+    for to in [pos2(600.0, 10.0), pos2(info.right() + 2.0, info.center().y)] {
+        let from = rect(&h, "panel.tab.Info").center();
+        drag(&mut h, from, to, Modifiers::NONE);
+        assert_eq!(h.state().ui.dock, before, "release at {to:?}");
+    }
 }
 
 #[test]
@@ -709,13 +728,12 @@ fn the_last_docked_group_cannot_float_away() {
     assert!(app.ui.dock.docked(PanelKind::Project) && !app.ui.dock.docked(PanelKind::Info));
 }
 
-/// Tools and the audio meters have no tab strip; the grip above each one moves it.
+/// Tools and the audio meters are ordinary groups with a tab strip: the meters show their tab,
+/// narrow Tools at least its drag bar, and either one joins another group.
 #[test]
-fn tools_and_meters_move_by_their_grips() {
+fn tools_and_meters_move_like_any_group() {
     let mut h = demo_harness();
-    for panel in [PanelKind::Tools, PanelKind::AudioMeters] {
-        assert!(h.state().auto.find(&format!("panel.drag.{}", panel.id())).is_some(), "{panel:?} has no grip");
-    }
+    assert!(h.state().auto.find("panel.tab.AudioMeters").is_some(), "the meters have no tab");
     let from = rect(&h, "panel.drag.Tools").center();
     let to = rect(&h, "panel.Program").center();
     drag(&mut h, from, to, Modifiers::NONE);

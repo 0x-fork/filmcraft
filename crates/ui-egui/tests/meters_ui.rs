@@ -89,8 +89,7 @@ impl Driver {
     fn label(&mut self, id: &str) -> String {
         self.element(id).and_then(|e| e["label"].as_str().map(str::to_string)).unwrap_or_default()
     }
-    /// Give the Audio Meters panel `width` points (it sits in a fixed-width split beside the
-    /// Timeline).
+    /// Give the Audio Meters panel `width` points (it sits in a split beside the Timeline).
     fn meters_width(&mut self, width: f32) {
         fn set(n: &mut Node<PanelKind>, width: f32) -> bool {
             match n {

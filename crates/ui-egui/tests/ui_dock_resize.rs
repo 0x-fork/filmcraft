@@ -33,11 +33,15 @@ fn snapshots(h: &mut Harness<'_, FilmcraftApp>, directory: Option<&std::path::Pa
     frames(h, 3);
 }
 
-fn first_size(h: &Harness<'_, FilmcraftApp>) -> f32 {
-    match h.state().ui.dock.root {
-        Some(craft_ui::docking::Node::Split { size: craft_ui::layout::SplitSize::FixedFirst(value), .. }) => value,
-        ref other => panic!("fixed-size mode changed: {other:?}"),
-    }
+/// The drawn width of the Project panel, the first child of the tests' split, after the layout
+/// change has been drawn.
+fn first_size(h: &mut Harness<'_, FilmcraftApp>) -> f32 {
+    frames(h, 2);
+    h.state().auto.find("panel.Project").unwrap().rect[2]
+}
+
+fn assert_near(value: f32, expected: f32) {
+    assert!((value - expected).abs() < 0.5, "{value} is not {expected}");
 }
 
 #[test]
@@ -79,7 +83,7 @@ fn focused_dock_resize_owns_arrows_and_keeps_pointer_dragging() {
     step(&mut h);
     h.event(Event::Key { key: Key::ArrowRight, physical_key: None, pressed: false, repeat: false, modifiers: Modifiers::NONE });
     step(&mut h);
-    assert_eq!(first_size(&h), 408.0);
+    assert_near(first_size(&mut h), 408.0);
     assert_eq!(h.state().session.state.playheads, before_playheads, "the Timeline shortcut must not seek");
     assert!(std::sync::Arc::ptr_eq(&h.state().session.project, &before_project));
 
@@ -96,7 +100,7 @@ fn focused_dock_resize_owns_arrows_and_keeps_pointer_dragging() {
     }
     h.event(Event::PointerButton { pos: from + vec2(20.0, 0.0), button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
     step(&mut h);
-    assert_eq!(first_size(&h), 428.0);
+    assert_near(first_size(&mut h), 428.0);
     assert_eq!(h.state().session.state.playheads, before_playheads);
 }
 
@@ -138,7 +142,7 @@ fn space_plays_after_a_pane_is_resized_with_the_pointer() {
     }
     h.event(Event::PointerButton { pos: from + vec2(20.0, 0.0), button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
     frames(&mut h, 3);
-    assert_eq!(first_size(&h), 420.0);
+    assert_near(first_size(&mut h), 420.0);
     // A pointer drag leaves no keyboard focus on the divider, so the editor keeps its shortcuts.
     assert_ne!(
         h.ctx.memory(|memory| memory.focused()),
@@ -178,7 +182,7 @@ fn space_plays_while_any_floating_resize_edge_has_focus() {
     }
 }
 
-/// The divider between groups stacked in a floating window has an automation id, and Space plays
+/// The divider between groups split in a floating window has an automation id, and Space plays
 /// while it has keyboard focus (#1482).
 #[test]
 fn space_plays_while_a_floating_group_divider_has_focus() {
@@ -193,10 +197,10 @@ fn space_plays_while_a_floating_group_divider_has_focus() {
     frames(&mut h, 3);
     use craft_ui::docking::{Divider, DockArea, Hit};
     let area = filmcraft_ui_egui::dock_area_id();
-    let hit = Hit::Divider(Divider::Group(PanelKind::Info));
-    assert!(DockArea::<PanelKind>::hit_rects(&h.ctx, area).iter().any(|(drawn, _)| *drawn == hit), "no group divider drawn");
+    let hit = Hit::Divider(Divider::WindowSplit(PanelKind::Info, vec![]));
+    assert!(DockArea::<PanelKind>::hit_rects(&h.ctx, area).iter().any(|(drawn, _)| *drawn == hit), "no window divider drawn");
     let divider = DockArea::<PanelKind>::hit_id(area, &hit);
-    let element = h.state().auto.find("dock.gutter.group.Info").expect("the group divider has no automation id");
+    let element = h.state().auto.find("panel.float.0.gutter.").expect("the window divider has no automation id");
     assert_eq!(element.widget_id, Some(format!("{:016x}", divider.value())));
     h.ctx.memory_mut(|memory| memory.request_focus(divider));
     frames(&mut h, 2);
@@ -207,35 +211,42 @@ fn space_plays_while_a_floating_group_divider_has_focus() {
     assert!(!h.state().playback.playing);
 }
 
-/// Tools keeps its factory width: dragging the divider beside it does not widen it.
+/// Tools is an ordinary group: the divider beside it widens and narrows it.
 #[test]
-fn the_divider_beside_tools_cannot_widen_it() {
+fn the_divider_beside_tools_moves_both_ways() {
     let app = FilmcraftApp::new(Session::default());
     let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(move |_| app);
     frames(&mut h, 4);
     h.state_mut().ui.dock = craft_ui::docking::Layout {
         root: Some(craft_ui::docking::Node::Split {
             axis: craft_ui::layout::SplitAxis::Horizontal,
-            size: craft_ui::layout::SplitSize::FixedFirst(filmcraft_ui_egui::dock::TOOLS_WIDTH),
+            size: craft_ui::layout::SplitSize::Ratio(0.06),
             first: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Tools], active: 0 }),
             second: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Timeline], active: 0 }),
         }),
         floating: vec![],
     };
     frames(&mut h, 3);
-    let element = h.state().auto.find("dock.gutter.").unwrap();
-    let from = Rect::from_min_size(pos2(element.rect[0], element.rect[1]), vec2(element.rect[2], element.rect[3])).center();
-    h.event(Event::PointerMoved(from));
-    step(&mut h);
-    h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
-    step(&mut h);
-    for offset in [10.0, 20.0, 30.0, 40.0] {
-        h.event(Event::PointerMoved(from + vec2(offset, 0.0)));
-        step(&mut h);
-    }
-    h.event(Event::PointerButton { pos: from + vec2(40.0, 0.0), button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
-    frames(&mut h, 3);
-    assert!(first_size(&h) <= filmcraft_ui_egui::dock::TOOLS_WIDTH, "Tools widened to {}", first_size(&h));
-    let tools = h.state().auto.find("panel.Tools").unwrap();
-    assert!(tools.rect[2] <= filmcraft_ui_egui::dock::TOOLS_WIDTH, "Tools drawn {} wide", tools.rect[2]);
+    let width = |h: &Harness<'_, FilmcraftApp>| h.state().auto.find("panel.Tools").unwrap().rect[2];
+    let before = width(&h);
+    let drag = |h: &mut Harness<'_, FilmcraftApp>, dx: f32| {
+        let element = h.state().auto.find("dock.gutter.").unwrap();
+        let from = Rect::from_min_size(pos2(element.rect[0], element.rect[1]), vec2(element.rect[2], element.rect[3])).center();
+        h.event(Event::PointerMoved(from));
+        step(h);
+        h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+        step(h);
+        for step_index in 1..=4 {
+            h.event(Event::PointerMoved(from + vec2(dx * step_index as f32 / 4.0, 0.0)));
+            step(h);
+        }
+        h.event(Event::PointerButton { pos: from + vec2(dx, 0.0), button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+        frames(h, 3);
+    };
+    drag(&mut h, 200.0);
+    let wider = width(&h);
+    assert!(wider >= before + 150.0, "Tools widened only from {before} to {wider}");
+    drag(&mut h, -150.0);
+    let narrower = width(&h);
+    assert!(narrower <= wider - 100.0, "Tools narrowed only from {wider} to {narrower}");
 }

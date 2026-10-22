@@ -227,17 +227,66 @@ pub fn find(prefs: &WorkspacePrefs, query: &str) -> Option<String> {
 }
 
 /// A workspace as saved: the user's saved version, else the built-in default. An entry that
-/// does not read or validate falls back to the default and stays in the file untouched.
+/// does not read or validate falls back to the default and stays in the file untouched. Fixed
+/// split sizes load as ratios.
 pub fn saved_workspace(prefs: &WorkspacePrefs, name: &str) -> Workspace {
     let saved = prefs.saved.iter().find(|saved| saved.name == name).and_then(|saved| {
-        let workspace = if saved.workspace.is_null() {
+        let mut workspace = if saved.workspace.is_null() {
             Workspace::new(legacy::layout(&saved.layout, &saved.floating)?)
         } else {
             serde_json::from_value::<Workspace>(saved.workspace.clone()).ok()?
         };
-        workspace.validate().ok().map(|()| workspace)
+        workspace.validate().ok()?;
+        ratio_layout(&mut workspace.layout);
+        if let Some(layout) = workspace.saved.as_mut() {
+            ratio_layout(layout);
+        }
+        Some(workspace)
     });
     saved.unwrap_or_else(|| Workspace::new(workspace(name)))
+}
+
+/// The docked area of a 1600 x 1000 pt window, which a fixed split size from a saved layout is
+/// measured against when it loads as a ratio.
+const NOMINAL_DOCK: egui::Vec2 = vec2(1600.0, 939.0);
+/// The gap between groups (`Tokens::gap`).
+const GAP: f32 = 4.0;
+
+/// Saved layouts may hold fixed split sizes (older FilmCraft versions wrote them); every split
+/// loads as the ratio it had at the nominal window size, so a window resize scales all groups.
+fn ratio_layout(layout: &mut Layout) {
+    if let Some(root) = layout.root.as_mut() {
+        ratio_splits(root, NOMINAL_DOCK, 0);
+    }
+    for window in &mut layout.floating {
+        let [_, _, width, height] = window.rect;
+        ratio_splits(&mut window.root, vec2(width, height), 0);
+    }
+}
+
+fn ratio_splits(node: &mut Node<PanelKind>, size: egui::Vec2, depth: usize) {
+    if depth > craft_ui::docking::MAX_DEPTH {
+        return;
+    }
+    let Node::Split { axis, size: split, first, second } = node else { return };
+    let extent = match axis {
+        SplitAxis::Horizontal => size.x,
+        SplitAxis::Vertical => size.y,
+    };
+    let available = (extent - GAP).max(1.0);
+    let ratio = match *split {
+        SplitSize::Ratio(ratio) => ratio,
+        SplitSize::FixedFirst(points) => points / available,
+        SplitSize::FixedSecond(points) => 1.0 - points / available,
+    };
+    let ratio = if ratio.is_finite() { ratio.clamp(0.0, 1.0) } else { 0.5 };
+    *split = SplitSize::Ratio(ratio);
+    let (a, b) = match axis {
+        SplitAxis::Horizontal => (vec2(available * ratio, size.y), vec2(available * (1.0 - ratio), size.y)),
+        SplitAxis::Vertical => (vec2(size.x, available * ratio), vec2(size.x, available * (1.0 - ratio))),
+    };
+    ratio_splits(first, a, depth + 1);
+    ratio_splits(second, b, depth + 1);
 }
 
 /// The saved layout of a workspace (see [`saved_workspace`]).
@@ -766,6 +815,29 @@ mod tests {
         }
     }
 
+    /// A saved v1 workspace with fixed split sizes, docked and floating, loads with ratios that
+    /// keep its proportions at the nominal window size.
+    #[test]
+    fn fixed_splits_in_saved_workspaces_load_as_ratios() {
+        let workspace = serde_json::json!({"layout": {"root": {"Split": {"axis": "Horizontal", "size": {"FixedSecond": 450.0},
+            "first": {"Split": {"axis": "Horizontal", "size": {"FixedFirst": 64.0},
+                "first": {"Tabs": {"panels": ["Tools"], "active": 0}}, "second": {"Tabs": {"panels": ["Timeline"], "active": 0}}}},
+            "second": {"Tabs": {"panels": ["AudioMeters"], "active": 0}}}},
+            "floating": [{"groups": [{"panels": ["Info"], "active": 0, "open": true, "height": 100.0},
+                {"panels": ["Effects"], "active": 0, "open": true, "height": 200.0}], "rect": [10.0, 20.0, 300.0, 304.0]}]}, "hidden": []});
+        let prefs = WorkspacePrefs { saved: vec![SavedWorkspace { name: "Mine".into(), workspace, ..Default::default() }], current: "Mine".into() };
+        let loaded = saved_docking(&prefs, "Mine");
+        assert!(loaded.is_docked(PanelKind::Tools) && loaded.is_visible(PanelKind::Info) && loaded.is_visible(PanelKind::Effects), "{loaded:?}");
+        let root = loaded.root.as_ref().unwrap();
+        assert_eq!(fixed_splits(root), 0, "{root:?}");
+        assert!(loaded.floating.iter().all(|window| fixed_splits(&window.root) == 0), "{:?}", loaded.floating);
+        let Node::Split { size: SplitSize::Ratio(outer), first, .. } = root else { panic!("{root:?}") };
+        let available = NOMINAL_DOCK.x - GAP;
+        assert!((outer - (available - 450.0) / available).abs() < 1e-4, "{outer}");
+        let Node::Split { size: SplitSize::Ratio(inner), .. } = &**first else { panic!("{first:?}") };
+        assert!((inner - 64.0 / (available * outer - GAP)).abs() < 1e-4, "{inner}");
+    }
+
     /// #284: with Project and Program closed (or every panel closed) a panel still opens.
     #[test]
     fn open_near_falls_back_to_the_first_group() {
@@ -796,7 +868,9 @@ mod tests {
         let prefs: WorkspacePrefs = serde_json::from_value(legacy).unwrap();
         let mine = saved_docking(&prefs, "Mine");
         assert!(mine.is_visible(PanelKind::Info) && mine.is_visible(PanelKind::Timeline) && mine.is_visible(PanelKind::Effects));
-        assert!(matches!(mine.root, Some(Node::Split { size: SplitSize::FixedFirst(300.0), .. })));
+        // the fixed 300 pt Project column loads as its share of the nominal 1600 pt window
+        let Some(Node::Split { size: SplitSize::Ratio(ratio), .. }) = mine.root else { panic!("{:?}", mine.root) };
+        assert!((ratio - 300.0 / (NOMINAL_DOCK.x - GAP)).abs() < 1e-4, "{ratio}");
         assert_eq!(saved_docking(&prefs, "Broken"), workspace("Broken"));
         let saved = SavedWorkspace { name: "Mine".into(), workspace: serde_json::to_value(Workspace::new(mine.clone())).unwrap(), ..Default::default() };
         let prefs = WorkspacePrefs { saved: vec![saved], current: "Mine".into() };

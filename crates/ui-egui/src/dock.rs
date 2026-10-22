@@ -416,7 +416,8 @@ fn workspace_root(name: &str) -> Node<PanelKind> {
     use SplitSize::Ratio;
     // Tools | Timeline | Audio Meters. The ratios start Tools about 64 pt and the meters about
     // 116 pt wide in a 1600 pt window; all three resize like any other group.
-    let bottom_editing = |tools: f32, timeline: f32| hsplit(Ratio(tools), tabs(&[Tools], 0), hsplit(Ratio(timeline), tabs(&[Timeline], 0), tabs(&[AudioMeters], 0)));
+    let bottom_editing =
+        |tools: f32, timeline: f32| hsplit(Ratio(tools), tabs(&[Tools], 0), hsplit(Ratio(timeline), tabs(&[Timeline], 0), tabs(&[AudioMeters], 0)));
     match name {
         "Assembly" => vsplit(
             Ratio(0.52),
@@ -481,11 +482,7 @@ fn workspace_root(name: &str) -> Node<PanelKind> {
                 hsplit(Ratio(0.5), tabs(&[Source, EffectControls, AudioClipMixer, Metadata], 0), tabs(&[Program], 0)),
                 tabs(&[Properties, EssentialGraphics, Text], 0),
             ),
-            hsplit(
-                Ratio(0.29),
-                tabs(&[Project, MediaBrowser, Libraries, Info, Effects, Markers, History], 0),
-                bottom_editing(0.06, 0.89),
-            ),
+            hsplit(Ratio(0.29), tabs(&[Project, MediaBrowser, Libraries, Info, Effects, Markers, History], 0), bottom_editing(0.06, 0.89)),
         ),
     }
 }

@@ -65,8 +65,10 @@ keeps Source navigation, markers and marked-range playback separate from Program
 Dock transactions and pointer targets use `craft-ui::docking`; bounded split geometry and
 keyboard-accessible resize handles use `craft-ui::layout`. FilmCraft adapts its existing saved
 dock tree and panel identities to the shared model. Panel tabs or their header grip can move
-between tab groups, split at an edge, reorder, or float when released with Cmd/Ctrl. Floating
-panels move by their empty header and resize from the bottom-right corner. Timeline sequence
+between tab groups, split at an edge, reorder, or float when released with Cmd/Ctrl; a release
+over no target cancels. Floating windows move by their title bar, resize from every edge and
+split like the main window. Every group, Tools and the Audio Meters included, resizes down to
+the same minimum and has no maximum. Timeline sequence
 tabs retain their sequence-opening, closing and horizontal reorder behavior; the header grip
 moves the Timeline panel. Workspace saves retain floating groups alongside the legacy layout
 JSON, and workspaces without floating data still load. Automation IDs and workspace commands

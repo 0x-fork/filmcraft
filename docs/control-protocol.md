@@ -201,18 +201,21 @@ Invalid source/target identities and non-finite or out-of-range geometry return 
 the layout unchanged. `ui.inspect.ui.dock.floating` reports floating windows and their
 logical-point rectangles. `panel.drag.<Panel>` locates the drag bar of each panel's group;
 `panel.float.<index>.move` and `.resize` locate floating geometry handles; `dock.gutter.<path>`
-locates a split divider (`a`/`b` per split level), and `dock.gutter.group.<Panel>`,
+locates a split divider (`a`/`b` per split level), `dock.corner.<outer path>.<inner path>` the
+four-way handle where two dividers meet, `panel.float.<index>.gutter.<path>` and
+`panel.float.<index>.corner.<outer path>.<inner path>` the same inside a floating window, and
+`dock.gutter.group.<Panel>`,
 `.stack.<Panel>` and `.column.<Panel>` the dividers below a group or accordion entry and beside a
 column, named by the panel they hold first; `ui.docking` lists every docking gesture source. Named workspace saves include floating windows.
 
-The panels use craft-ui's shared docking in its Frame profile. Its control commands
+The panels use craft-ui's shared docking with its split-tree settings. Its control commands
 (`window.panel.move`, `.float`, `.dock`, `.activate`, `.close`, `.closeGroup`, `.closeOthers`,
 `.minimize`, `.layout`; see craft-libs `docs/ui-docking.md`) route here too; the three
 commands above are FilmCraft's names for `window.panel.float`, `.dock` and `.close`.
 
 `window.dockAction` accepts `{action}` using the shared docking action's JSON form. It
 covers tab moves and ordering, split and floating geometry, activation, and closing.
-For example, `{"action":{"ResizeSplit":{"path":[],"size":{"FixedFirst":360}}}}`
+For example, `{"action":{"ResizeSplit":{"path":[],"size":{"Ratio":0.3}}}}`
 resizes the root split; path entries use `false` for the first child and `true` for
 the second. `{"action":{"MoveFloating":{"panel":"Info","rect":[45,65,420,320]}}}`
 repositions and resizes the floating group containing Info. Invalid actions leave the

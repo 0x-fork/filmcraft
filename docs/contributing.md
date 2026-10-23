@@ -89,7 +89,8 @@ Regular, to keep the wasm small). The Japanese ones become the last fallback of 
 (`crates/ui-egui/src/theme.rs`, BIZ UDPGothic first) and fallback faces in the text engine (Gothic
 for sans text, Mincho for serif text). Without `CRAFT_FONTS_DIR`, `CRAFT_FONTS` is empty and
 FilmCraft uses its bundled and system fonts. A `CRAFT_FONTS_DIR` that is not a checkout is a build
-warning, or an error with `CRAFT_FONTS_REQUIRED=1` (release builds set both). Tests on these fonts'
+warning, or an error with `CRAFT_FONTS_REQUIRED=1` (release builds set both). With
+`CRAFT_FONTS_REQUIRED=1`, a build without `CRAFT_FONTS_DIR` is an error too. Tests on these fonts'
 glyphs skip when it is empty; when you touch fonts, run the gates both with and without it.
 
 Chinese media names and track labels use the `Hans` / `Hant` craft-fonts faces after the Japanese

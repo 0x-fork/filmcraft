@@ -218,6 +218,7 @@ impl FilmcraftApp {
             active: self.session.state.active_sequence.map(|id| id.0),
         };
         let style = dock_style(ui, &t);
+        // No `monitors`: the monitor list comes with the egui fork's `ViewportInfo::monitors`.
         let mut area =
             DockArea::new(area_id()).float_bounds(self.float_bounds(&ctx)).maximized(self.ui.keys.maximized.filter(|panel| self.ui.dock.is_docked(*panel)));
         if let Some(panel) = self.pending_panel_raise.take() {
@@ -235,6 +236,7 @@ impl FilmcraftApp {
         if let Some(panel) = output.focused {
             self.ui.focused = panel;
         }
+        self.handle_forwarded_keys(&ctx, output.forwarded_events);
         if let Some(error) = output.error {
             self.ui.status = error.to_string();
         }
@@ -435,6 +437,11 @@ impl DockContent<PanelKind> for FilmContent<'_> {
 
     fn logical_label(&self, panel: &PanelKind) -> String {
         crate::i18n::t(panel.title()).to_string()
+    }
+
+    /// Every floating panel gets its own OS window on desktop.
+    fn allow_native(&self, _panel: &PanelKind) -> bool {
+        true
     }
 
     /// With no sequence open, the Timeline's tab says so.

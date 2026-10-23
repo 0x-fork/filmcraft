@@ -1566,60 +1566,100 @@ impl FilmcraftApp {
             let _ = self.session.execute("trim.cancelDynamic", json!({}));
         }
         panels::masks::pen_take_back(self, ctx, text_focused);
+        let fire = ctx.input_mut(|i| self.match_shortcuts(i, text_focused, divider_focused));
+        self.fire_shortcuts(ctx, fire);
+    }
+
+    /// Key, text and clipboard events that a floating panel in its own OS window left over
+    /// (`DockOutput::forwarded_events`): they run the main window's bindings in the frame they
+    /// arrive, so shortcuts work while a floating window has focus. craft-ui forwards nothing
+    /// while that window's text field has focus.
+    pub(crate) fn handle_forwarded_keys(&mut self, ctx: &egui::Context, events: Vec<egui::Event>) {
+        if events.is_empty() || self.dialog == Some(Dialog::Shortcuts) {
+            return;
+        }
+        let mut input = egui::InputState::default();
+        input.modifiers = self.floating_window_modifiers(ctx);
+        input.events = events;
+        if self.session.trim_play.dynamic.is_some() && input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+            let _ = self.session.execute("trim.cancelDynamic", json!({}));
+        }
+        let fire = self.match_shortcuts(&mut input, false, false);
+        self.fire_shortcuts(ctx, fire);
+    }
+
+    /// The modifiers held in the focused native floating window. Copy, Cut and Paste events
+    /// carry none, and egui-winit drops the key press they stand for.
+    fn floating_window_modifiers(&self, ctx: &egui::Context) -> egui::Modifiers {
+        self.ui
+            .dock
+            .floating
+            .iter()
+            .filter(|window| window.native.is_some())
+            .map(|window| craft_ui::docking::DockArea::<PanelKind>::window_viewport(dock_ui::area_id(), window.id))
+            .find_map(|viewport| ctx.input_for(viewport, |i| (i.viewport().focused == Some(true)).then_some(i.modifiers)))
+            .unwrap_or_default()
+    }
+
+    /// The binding ids the key presses in `i` fire, consuming those presses.
+    fn match_shortcuts(&mut self, i: &mut egui::InputState, text_focused: bool, divider_focused: bool) -> Vec<String> {
         // Panel shortcuts of the focused panel override application shortcuts on the same chord.
         // egui ignores extra Shift and Alt when matching, so the most specific chords go first
         // across both scopes (the sort is stable, so the panel still wins a tie): otherwise the
         // Timeline's `Delete` (Clear) swallows the app-wide `Shift+Delete` (Ripple Delete) (#680).
         let focused = self.ui.focused.title();
         let mut fire = Vec::new();
-        ctx.input_mut(|i| {
-            let modifiers = i.modifiers;
-            // With no text on the system clipboard, egui-winit drops the Ctrl+V press but still
-            // passes its release: put the press back, so Paste can paste files or an image (#611).
-            let mut swallowed = None;
-            for e in &i.events {
-                match e {
-                    egui::Event::Key { key: egui::Key::V, pressed, modifiers: m, .. } => {
-                        if !pressed && !self.v_down {
-                            swallowed = Some(*m);
-                        }
-                        self.v_down = *pressed;
+        let modifiers = i.modifiers;
+        // With no text on the system clipboard, egui-winit drops the Ctrl+V press but still
+        // passes its release: put the press back, so Paste can paste files or an image (#611).
+        let mut swallowed = None;
+        for e in &i.events {
+            match e {
+                egui::Event::Key { key: egui::Key::V, pressed, modifiers: m, .. } => {
+                    if !pressed && !self.v_down {
+                        swallowed = Some(*m);
                     }
-                    egui::Event::Paste(_) if modifiers.command => self.v_down = true,
-                    _ => {}
+                    self.v_down = *pressed;
                 }
+                egui::Event::Paste(_) if modifiers.command => self.v_down = true,
+                _ => {}
             }
-            if let Some(m) = swallowed {
-                i.events.push(egui::Event::Key {
-                    key: egui::Key::V,
-                    physical_key: Some(egui::Key::V),
-                    pressed: true,
-                    repeat: false,
-                    modifiers: m | egui::Modifiers::COMMAND,
-                });
+        }
+        if let Some(m) = swallowed {
+            i.events.push(egui::Event::Key {
+                key: egui::Key::V,
+                physical_key: Some(egui::Key::V),
+                pressed: true,
+                repeat: false,
+                modifiers: m | egui::Modifiers::COMMAND,
+            });
+        }
+        clipboard_events_as_keys(&mut i.events, modifiers);
+        let panel = self.bindings.iter().filter(|b| b.3.as_deref() == Some(focused));
+        let app_wide = self.bindings.iter().filter(|b| b.3.is_none());
+        let mut candidates: Vec<&menus::KeyBinding> = panel.chain(app_wide).collect();
+        candidates.sort_by_key(|b| std::cmp::Reverse(menus::specificity(b.0)));
+        for (m, k, id, _) in candidates {
+            // With a text field focused, an unmodified key belongs to the field (and to the input
+            // method composing in it), not to a tool shortcut: `J`, `Z`, `R`, `A`… are the keys
+            // Vietnamese Telex combines into diacritics (#243). Chords with a modifier stay:
+            // Ctrl+S and friends are not something a text field or an IME consumes.
+            if lets_text_field_keep(*m, text_focused) {
+                continue;
             }
-            clipboard_events_as_keys(&mut i.events, modifiers);
-            let panel = self.bindings.iter().filter(|b| b.3.as_deref() == Some(focused));
-            let app_wide = self.bindings.iter().filter(|b| b.3.is_none());
-            let mut candidates: Vec<&menus::KeyBinding> = panel.chain(app_wide).collect();
-            candidates.sort_by_key(|b| std::cmp::Reverse(menus::specificity(b.0)));
-            for (m, k, id, _) in candidates {
-                // With a text field focused, an unmodified key belongs to the field (and to the input
-                // method composing in it), not to a tool shortcut: `J`, `Z`, `R`, `A`… are the keys
-                // Vietnamese Telex combines into diacritics (#243). Chords with a modifier stay:
-                // Ctrl+S and friends are not something a text field or an IME consumes.
-                if lets_text_field_keep(*m, text_focused) {
-                    continue;
-                }
-                // The focused divider consumes the arrows itself (egui matches them with any Shift/Alt).
-                if divider_focused && matches!(k, egui::Key::ArrowLeft | egui::Key::ArrowRight | egui::Key::ArrowUp | egui::Key::ArrowDown) {
-                    continue;
-                }
-                if i.consume_key(*m, *k) {
-                    fire.push(id.clone());
-                }
+            // The focused divider consumes the arrows itself (egui matches them with any Shift/Alt).
+            if divider_focused && matches!(k, egui::Key::ArrowLeft | egui::Key::ArrowRight | egui::Key::ArrowUp | egui::Key::ArrowDown) {
+                continue;
             }
-        });
+            if i.consume_key(*m, *k) {
+                fire.push(id.clone());
+            }
+        }
+        fire
+    }
+
+    /// Run the commands of the bindings `match_shortcuts` fired, as the focused panel scopes them.
+    fn fire_shortcuts(&mut self, ctx: &egui::Context, fire: Vec<String>) {
         for mut id in fire {
             // Select All / Deselect All act on the Project panel's items when it has focus (#168).
             // Select All takes only what the shown bin lists, not the whole project (#456).
@@ -2362,6 +2402,22 @@ mod clipboard_key_tests {
         assert_eq!(events.len(), 3);
         assert!(matches!(events[0], Event::Text(_)));
         assert!(matches!(events[1], Event::Copy));
+    }
+}
+
+#[cfg(test)]
+mod forwarded_key_tests {
+    use egui::{Event, Key, Modifiers};
+
+    /// A key a floating native window left over runs the main window's bindings.
+    #[test]
+    fn forwarded_keys_fire_shortcuts() {
+        let mut app = super::FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.bindings = super::menus::bindings(&app);
+        app.ui.focused = crate::dock::PanelKind::Timeline;
+        let shift_backtick = Event::Key { key: Key::Backtick, physical_key: Some(Key::Backtick), pressed: true, repeat: false, modifiers: Modifiers::SHIFT };
+        app.handle_forwarded_keys(&egui::Context::default(), vec![Event::Text("~".into()), shift_backtick]);
+        assert_eq!(app.ui.keys.maximized, Some(crate::dock::PanelKind::Timeline), "Shift+` maximizes the focused frame");
     }
 }
 

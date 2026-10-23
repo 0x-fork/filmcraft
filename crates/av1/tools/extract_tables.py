@@ -20,15 +20,19 @@ import sys
 from pathlib import Path
 
 
-def _spec_path(arg):
-    """Resolve a CLI path argument and require it to be an existing regular file."""
+def _spec_dir(arg):
+    """Resolve the CLI argument and require it to be an existing directory."""
     path = Path(arg).resolve()
-    if not path.is_file():
-        sys.exit(f"not a readable file: {arg}")
+    if not path.is_dir():
+        sys.exit(f"not a directory: {arg}")
     return path
 
 
-root = sys.argv[1]
+if len(sys.argv) != 2:
+    sys.exit("usage: extract_tables.py <av1-spec checkout>")
+# The argument is the operator's own spec checkout; _spec_dir requires it to be an existing
+# directory before anything is read from it.
+root = _spec_dir(sys.argv[1])  # NOSONAR
 files = sorted(f for f in os.listdir(root) if f.endswith(".md"))
 texts = {f: open(os.path.join(root, f), encoding="utf-8").read() for f in files}
 

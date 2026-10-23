@@ -117,11 +117,11 @@ Every commit must pass all of these:
 |---|---|
 | Format | `cargo fmt --check` (`rustfmt.toml`: `max_width = 160`) |
 | Lints | `cargo clippy --workspace --all-targets -- -D warnings` |
-| Tests | `cargo test --workspace` |
+| Tests | `cargo nextest run --workspace` ([cargo-nextest](https://nexte.st), or `cargo test --workspace`), then `cargo test --workspace --doc` |
 | Layering | `cargo xtask layers` |
 | Assets | `cargo xtask assets` |
 | wasm | `cargo xtask wasm` (checks every L0–L4 crate, `filmcraft-ui-egui` and `filmcraft-web` for `wasm32-unknown-unknown`) |
-| All of the above | `cargo xtask ci` (runs clippy and tests with `--release`) |
+| All of the above | `cargo xtask ci` |
 
 Run them with `CRAFT_FONTS_DIR` set too when you change font code ([craft-fonts](#building-with-craft-fonts)).
 

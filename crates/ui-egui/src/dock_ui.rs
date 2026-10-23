@@ -4,7 +4,9 @@
 //! sequence tabs, and maps its control commands onto
 //! craft-ui's `DockCommand`.
 
-use craft_ui::docking::{Action, Divider, DockArea, DockCommand, DockContent, DockEvent, DockStyle, FloatSpace, Hit, Layout, PanelLimits, Profile, ResizeEdge, Workspace};
+use craft_ui::docking::{
+    Action, Divider, DockArea, DockCommand, DockContent, DockEvent, DockStyle, FloatSpace, Hit, Layout, PanelLimits, Profile, ResizeEdge, Workspace,
+};
 use egui::{Rect, Sense, Stroke, StrokeKind, vec2};
 use serde_json::{Value, json};
 
@@ -220,7 +222,8 @@ impl FilmcraftApp {
             active: self.session.state.active_sequence.map(|id| id.0),
         };
         let style = dock_style(ui, &t);
-        let mut area = DockArea::new(area_id()).float_bounds(self.float_bounds(&ctx)).maximized(self.ui.keys.maximized.filter(|panel| self.ui.dock.is_docked(*panel)));
+        let mut area =
+            DockArea::new(area_id()).float_bounds(self.float_bounds(&ctx)).maximized(self.ui.keys.maximized.filter(|panel| self.ui.dock.is_docked(*panel)));
         if let Some(panel) = self.pending_panel_raise.take() {
             area = area.raise_panel(panel);
         }

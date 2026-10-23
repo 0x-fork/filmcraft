@@ -18,11 +18,15 @@ struct Driver {
 
 impl Driver {
     fn new() -> Self {
+        Self::with_height(980.0)
+    }
+
+    fn with_height(height: f32) -> Self {
         let mut s = Session::default();
         s.execute("file.openDemoProject", json!({})).unwrap();
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(s).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
+        let harness = Harness::builder().with_size(egui::vec2(1600.0, height)).with_max_steps(10_000).build_eframe(move |_cc| app);
         let mut d = Driver { harness, tx };
         d.frames(4);
         d
@@ -64,6 +68,14 @@ impl Driver {
     fn has(&mut self, id: &str) -> bool {
         let v = self.ok("ui.elements", json!({"prefix": id}));
         v.as_array().unwrap().iter().any(|e| e["id"] == json!(id))
+    }
+
+    /// [x, y, width, height]
+    fn rect(&mut self, id: &str) -> [f64; 4] {
+        let v = self.ok("ui.elements", json!({"prefix": id}));
+        let e = v.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).unwrap_or_else(|| panic!("no element {id}"));
+        let r: Vec<f64> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+        [r[0], r[1], r[2], r[3]]
     }
 
     fn seq(&mut self) -> Sequence {
@@ -157,4 +169,19 @@ fn join_through_edits_joins_only_the_right_clicked_cut() {
     let before = d.seq().video_tracks[0].items.len();
     d.click("timeline.editPointMenu.joinThroughEdits");
     assert_eq!(d.seq().video_tracks[0].items.len(), before, "disabled: nothing joined");
+}
+
+/// #2852: on a short screen the clip menu scrolls, so the items past its bottom can be reached.
+#[test]
+fn the_clip_menu_scrolls_on_a_short_screen() {
+    let height = 600.0;
+    let mut d = Driver::with_height(height as f32);
+    let (_, b) = d.cut_on_v1();
+    d.right_click(b, 0.5);
+    let last = "timeline.clipMenu.sequence.joinThroughEdits";
+    assert!(d.rect(last)[1] > height, "the menu is taller than the screen");
+    d.ok("ui.scroll", json!({"id": "timeline.clipMenu.edit.cut", "dy": -2000.0}));
+    d.frames(10);
+    let r = d.rect(last);
+    assert!(r[1] >= 0.0 && r[1] + r[3] <= height, "Join Through Edits scrolled into view: {r:?}");
 }

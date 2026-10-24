@@ -56,14 +56,12 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
 
 /// Save the current layout as the saved layout of `name`.
 fn save(app: &mut FilmcraftApp, name: &str) -> Result<(), String> {
-    let workspace = crate::dock::Workspace::new(app.ui.dock.clone());
-    workspace.validate().map_err(|e| e.to_string())?;
-    let workspace = serde_json::to_value(&workspace).map_err(|e| e.to_string())?;
+    let entry = dock::SavedWorkspace::new(name, &app.ui.dock)?;
     let mut next = app.workspaces.clone();
     let saved = &mut next.saved;
     match saved.iter_mut().find(|s| s.name == name) {
-        Some(s) => *s = dock::SavedWorkspace { name: name.to_string(), workspace, ..Default::default() },
-        None => saved.push(dock::SavedWorkspace { name: name.to_string(), workspace, ..Default::default() }),
+        Some(s) => *s = entry,
+        None => saved.push(entry),
     }
     next.current = name.to_string();
     app.set_workspaces(next)

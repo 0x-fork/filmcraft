@@ -94,7 +94,8 @@ be resolved, so a floating window docks back only through a command such as `win
 Where egui embeds viewports (tests), floating windows stay inside the main window.
 
 Named workspaces save the layout, floating windows included; workspaces saved in the earlier
-layout format still load. Automation IDs and workspace commands remain the integration boundary.
+layout format still load. While every floating window is one tab group, a save also writes the
+earlier format, so earlier versions still open the workspace. Automation IDs and workspace commands remain the integration boundary.
 
 Tools and dock tabs expose their actual egui widget IDs, paint keyboard focus, and support
 Tab/Shift-Tab traversal and Space/Enter activation. Control-injected keys can reach focused

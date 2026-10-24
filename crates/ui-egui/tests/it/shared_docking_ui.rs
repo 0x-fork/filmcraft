@@ -91,7 +91,9 @@ fn builtin_and_legacy_workspace_shapes_roundtrip_and_save_floating() {
     let prefs = dock::WorkspacePrefs::load(&dir.join(dock::WORKSPACES_FILE));
     let restored = dock::saved_docking(&prefs, "Floating test");
     assert_eq!(restored, app.ui.dock);
-    assert!(prefs.saved[0].layout.is_null() && !prefs.saved[0].workspace.is_null());
+    // Earlier versions read `layout` and `floating`.
+    assert!(!prefs.saved[0].layout.is_null() && !prefs.saved[0].workspace.is_null());
+    assert_eq!(prefs.saved[0].floating[0]["panels"], json!(["Info"]));
     let mut restarted_session = Session::default();
     restarted_session.prefs_path = Some(dir.join("preferences.json"));
     let restarted = FilmcraftApp::new(restarted_session);

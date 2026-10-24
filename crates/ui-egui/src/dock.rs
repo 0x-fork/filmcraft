@@ -162,7 +162,9 @@ pub struct WorkspacePrefs {
 /// A named workspace. `workspace` is a craft-ui [`Workspace`] kept as JSON, so one unreadable
 /// entry (a panel a newer version added) doesn't lose the others. Files written before
 /// FilmCraft used craft-ui workspaces hold a frame tree in `layout` and floating groups in
-/// `floating` instead; [`saved_workspace`] reads them, and saving writes `workspace`.
+/// `floating` instead; [`saved_workspace`] reads them. [`SavedWorkspace::new`] writes
+/// `workspace`, and also `layout` and `floating` while every floating window is one tab
+/// group, so that earlier versions still open the workspace.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SavedWorkspace {
@@ -173,6 +175,16 @@ pub struct SavedWorkspace {
     pub layout: serde_json::Value,
     #[serde(skip_serializing_if = "serde_json::Value::is_null")]
     pub floating: serde_json::Value,
+}
+
+impl SavedWorkspace {
+    pub fn new(name: &str, layout: &Layout) -> Result<Self, String> {
+        let workspace = Workspace::new(layout.clone());
+        workspace.validate().map_err(|e| e.to_string())?;
+        let workspace = serde_json::to_value(&workspace).map_err(|e| e.to_string())?;
+        let (layout, floating) = legacy::write(layout).unwrap_or_default();
+        Ok(SavedWorkspace { name: name.to_string(), workspace, layout, floating })
+    }
 }
 
 impl WorkspacePrefs {
@@ -298,11 +310,11 @@ pub fn saved_docking(prefs: &WorkspacePrefs, name: &str) -> Layout {
 /// [`Workspace`]s.
 mod legacy {
     use super::{Floating, Layout, Node, PanelKind, SplitAxis, SplitSize};
-    use serde::Deserialize;
+    use serde::{Deserialize, Serialize};
 
     const MAX_DEPTH: usize = 32;
 
-    #[derive(Deserialize)]
+    #[derive(Deserialize, Serialize)]
     enum Tree {
         /// `vertical`: children stacked top/bottom; else side by side.
         Split {
@@ -317,14 +329,14 @@ mod legacy {
         },
     }
 
-    #[derive(Deserialize)]
+    #[derive(Deserialize, Serialize)]
     enum Size {
         Ratio(f32),
         FixedA(f32),
         FixedB(f32),
     }
 
-    #[derive(Deserialize)]
+    #[derive(Deserialize, Serialize)]
     struct Group {
         panels: Vec<PanelKind>,
         active: usize,
@@ -348,6 +360,45 @@ mod legacy {
                 second: Box::new(node(*b, depth + 1)?),
             },
         })
+    }
+
+    fn tree(node: &Node<PanelKind>, depth: usize) -> Option<Tree> {
+        if depth > MAX_DEPTH {
+            return None;
+        }
+        Some(match node {
+            Node::Tabs { panels, active } => Tree::Tabs { panels: panels.clone(), active: *active },
+            Node::Split { axis, size, first, second } => Tree::Split {
+                vertical: *axis == SplitAxis::Vertical,
+                size: match *size {
+                    SplitSize::Ratio(value) => Size::Ratio(value),
+                    SplitSize::FixedFirst(value) => Size::FixedA(value),
+                    SplitSize::FixedSecond(value) => Size::FixedB(value),
+                },
+                a: Box::new(tree(first, depth + 1)?),
+                b: Box::new(tree(second, depth + 1)?),
+            },
+            _ => return None,
+        })
+    }
+
+    /// `layout` as the `layout` and `floating` fields earlier versions read; `None` when a
+    /// floating window holds more than one tab group, which they can't represent.
+    pub(super) fn write(layout: &Layout) -> Option<(serde_json::Value, serde_json::Value)> {
+        let root = match &layout.root {
+            Some(root) => tree(root, 0)?,
+            None => Tree::Tabs { panels: Vec::new(), active: 0 },
+        };
+        let floating = layout
+            .floating
+            .iter()
+            .map(|window| match &window.root {
+                Node::Tabs { panels, active } => Some(Group { panels: panels.clone(), active: *active, rect: window.rect }),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let floating = if floating.is_empty() { serde_json::Value::Null } else { serde_json::to_value(floating).ok()? };
+        Some((serde_json::to_value(root).ok()?, floating))
     }
 
     pub(super) fn layout(root: &serde_json::Value, floating: &serde_json::Value) -> Option<Layout> {
@@ -875,5 +926,83 @@ mod tests {
         assert!(!text.contains("\"layout\":{\"Split\""), "{text}");
         let back: WorkspacePrefs = serde_json::from_str(&text).unwrap();
         assert_eq!(saved_docking(&back, "Mine"), mine);
+    }
+
+    /// A saved workspace still opens in versions that read only the earlier `layout` and
+    /// `floating` fields, as long as every floating window is one tab group.
+    #[test]
+    fn saved_workspaces_open_in_earlier_versions() {
+        // The shapes earlier versions read the file into.
+        #[allow(dead_code)]
+        #[derive(Debug, PartialEq, Deserialize)]
+        enum OldSize {
+            Ratio(f32),
+            FixedA(f32),
+            FixedB(f32),
+        }
+        #[allow(dead_code)]
+        #[derive(Debug, PartialEq, Deserialize)]
+        enum OldNode {
+            Split { vertical: bool, size: OldSize, a: Box<OldNode>, b: Box<OldNode> },
+            Tabs { panels: Vec<PanelKind>, active: usize },
+        }
+        #[derive(Debug, PartialEq, Deserialize)]
+        struct OldFloating {
+            panels: Vec<PanelKind>,
+            active: usize,
+            rect: [f32; 4],
+        }
+        #[derive(Default, Deserialize)]
+        #[serde(rename_all = "camelCase", default)]
+        struct OldSaved {
+            layout: serde_json::Value,
+            floating: serde_json::Value,
+        }
+        #[derive(Default, Deserialize)]
+        #[serde(rename_all = "camelCase", default)]
+        struct OldPrefs {
+            saved: Vec<OldSaved>,
+        }
+        let read = |layout: &Layout| {
+            let prefs = WorkspacePrefs { saved: vec![SavedWorkspace::new("Mine", layout).unwrap()], current: "Mine".into() };
+            let text = serde_json::to_string(&prefs).unwrap();
+            assert_eq!(saved_docking(&serde_json::from_str(&text).unwrap(), "Mine"), *layout, "{text}");
+            let old: OldPrefs = serde_json::from_str(&text).unwrap();
+            let entry = old.saved.into_iter().next().unwrap();
+            let floating: Vec<OldFloating> = if entry.floating.is_null() { vec![] } else { serde_json::from_value(entry.floating).unwrap() };
+            (serde_json::from_value::<OldNode>(entry.layout).ok(), floating)
+        };
+
+        fn panels(node: &OldNode, out: &mut Vec<PanelKind>) {
+            match node {
+                OldNode::Split { a, b, .. } => {
+                    panels(a, out);
+                    panels(b, out);
+                }
+                OldNode::Tabs { panels, .. } => out.extend(panels),
+            }
+        }
+
+        let mut layout = workspace("Editing");
+        layout.apply(Action::Float { panel: PanelKind::Info, rect: [10.0, 20.0, 300.0, 200.0] }).unwrap();
+        let (root, floating) = read(&layout);
+        let mut old = Vec::new();
+        panels(&root.unwrap(), &mut old);
+        let docked = Layout { root: layout.root.clone(), floating: vec![] };
+        assert_eq!(old, docked.panels().into_iter().copied().collect::<Vec<_>>());
+        assert_eq!(floating, vec![OldFloating { panels: vec![PanelKind::Info], active: 0, rect: [10.0, 20.0, 300.0, 200.0] }]);
+
+        // A floating window split in two has no earlier form: those versions use the default.
+        let mut split = layout.clone();
+        split.apply(Action::Float { panel: PanelKind::Effects, rect: [400.0, 20.0, 300.0, 200.0] }).unwrap();
+        let window = split.floating.iter().position(|w| w.contains(&PanelKind::Effects)).unwrap();
+        let effects = split.floating.remove(window);
+        split.floating[0].root = Node::Split {
+            axis: SplitAxis::Vertical,
+            size: SplitSize::Ratio(0.5),
+            first: Box::new(split.floating[0].root.clone()),
+            second: Box::new(effects.root),
+        };
+        assert_eq!(read(&split), (None, vec![]));
     }
 }

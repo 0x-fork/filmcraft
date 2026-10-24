@@ -206,6 +206,47 @@ fn new_keys_work_in_the_app() {
     assert_eq!(d.app().ui.program.zoom, None);
 }
 
+/// Maximize Frame Under Cursor matches the pointer only against the panels of the window
+/// holding it: a panel floated into its own OS window has that window's coordinates, which
+/// overlap the main window's.
+#[test]
+fn maximize_under_cursor_ignores_native_window_rects() {
+    use filmcraft_ui_egui::dock::PanelKind;
+    let mut d = Driver::new();
+    // A stand-in for OS windows: each native viewport runs its own frame, with no input.
+    egui::Context::set_immediate_viewport_renderer(|ctx, mut viewport| {
+        let size = viewport.builder.inner_size.unwrap_or(egui::vec2(400.0, 300.0));
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        let info = egui::ViewportInfo { inner_rect: Some(screen), ..Default::default() };
+        let id = viewport.ids.this;
+        let input = egui::RawInput { viewport_id: id, viewports: std::iter::once((id, info)).collect(), screen_rect: Some(screen), ..Default::default() };
+        ctx.run_ui(input, |ui| (viewport.viewport_ui_cb)(ui)).textures_delta.clear();
+    });
+    d.harness.ctx.set_embed_viewports(false);
+    d.ok("ui.menu.invoke", json!({"id": "window.floatPanel", "params": {"panel": "Info", "rect": [0, 0, 700, 500]}}));
+    d.frames(4);
+    let elements = d.ok("ui.elements", json!({"prefix": "panel."}));
+    let elements = elements.as_array().unwrap();
+    let rect = |e: &Value| {
+        let r: Vec<f32> = e["rect"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
+        egui::Rect::from_min_size(egui::pos2(r[0], r[1]), egui::vec2(r[2], r[3]))
+    };
+    let floated = elements.iter().find(|e| e["id"] == "panel.Info").unwrap();
+    assert!(floated["window"].is_u64(), "the native window's body carries its window: {floated}");
+    let (under, pos) = elements
+        .iter()
+        .filter(|e| e["window"].is_null())
+        .find_map(|e| {
+            let panel = PanelKind::from_name(e["id"].as_str()?.strip_prefix("panel.")?)?;
+            let overlap = rect(e).intersect(rect(floated));
+            overlap.is_positive().then(|| (panel, overlap.center()))
+        })
+        .expect("a main-window panel overlaps the native window's body rect");
+    d.harness.event(egui::Event::PointerMoved(pos));
+    d.key("`");
+    assert_eq!(d.app().ui.keys.maximized, Some(under));
+}
+
 /// Select Next / Previous Panel skip the narrow Tools and Audio Meters strips.
 #[test]
 fn panel_cycling_skips_tools_and_audio_meters() {

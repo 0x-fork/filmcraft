@@ -4,6 +4,8 @@
 //! sequence tabs, and maps its control commands onto
 //! craft-ui's `DockCommand`.
 
+use std::collections::HashMap;
+
 use craft_ui::docking::{Action, Divider, DockArea, DockCommand, DockContent, DockEvent, DockStyle, FloatSpace, Hit, Layout, ResizeEdge, Workspace};
 use egui::{Rect, Sense, Stroke, StrokeKind, vec2};
 use serde_json::{Value, json};
@@ -228,6 +230,7 @@ impl FilmcraftApp {
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt("filmcraft-dock-area"));
         child.set_clip_rect(body.intersect(ui.clip_rect()));
         let seq_width = dock::sequence_tabs_width(ui, &seqs);
+        self.auto.windows.clear();
         let mut content =
             FilmContent { app: self, seqs, seq_width, tokens: t, seq_actions: Vec::new(), menu: None, bodies: Vec::new(), restore_workspace: false };
         let output = area.show_content(&mut child, &layout, &style, &mut content);
@@ -320,11 +323,24 @@ impl FilmcraftApp {
     /// where two dividers meet, the same inside floating window `n` as `panel.float.<n>.gutter.…`
     /// and `panel.float.<n>.corner.…`, and `dock.gutter.group.<Panel>`, `.stack.<Panel>` and
     /// `.column.<Panel>` for the dividers below a group or accordion entry and beside a column,
-    /// named by the panel they hold first.
+    /// named by the panel they hold first. Controls of a floating window in its own OS window
+    /// are registered in that window's viewport.
     fn register_dock_hits(&mut self, hits: &[(Hit<PanelKind>, Rect)]) {
         let window = |panel: &PanelKind| self.ui.dock.floating.iter().position(|window| window.contains(panel));
+        let native: HashMap<usize, egui::ViewportId> = self.auto.windows.iter().map(|(viewport, index)| (*index, *viewport)).collect();
         let mut found = Vec::new();
         for (hit, rect) in hits {
+            let viewport = match hit {
+                Hit::Divider(Divider::Split(_) | Divider::Intersection(..)) => None,
+                Hit::Divider(Divider::WindowSplit(panel, _) | Divider::WindowIntersection(panel, ..))
+                | Hit::Tab(panel)
+                | Hit::DragBar(panel)
+                | Hit::Overflow(panel)
+                | Hit::Title(panel)
+                | Hit::Resize(panel, _) => window(panel).and_then(|index| native.get(&index).copied()),
+                _ => None,
+            }
+            .unwrap_or(egui::ViewportId::ROOT);
             let entry = match hit {
                 Hit::Tab(panel) => (format!("panel.tab.{}", panel.id()), panel.title()),
                 Hit::DragBar(panel) => (format!("panel.drag.{}", panel.id()), "Move panel"),
@@ -353,12 +369,12 @@ impl FilmcraftApp {
                 },
                 _ => continue,
             };
-            found.push((entry, *rect, DockArea::hit_id(area_id(), hit)));
+            found.push((entry, *rect, DockArea::hit_id(area_id(), hit), viewport));
         }
         // The widget id lets keyboard focus on a divider or grip map to its element (shortcuts
         // stay live while one is focused).
-        for ((id, label), rect, widget) in found {
-            self.auto.add(&id, rect, label);
+        for ((id, label), rect, widget, viewport) in found {
+            self.auto.add_in(viewport, &id, rect, label);
             if let Some(element) = self.auto.elements.last_mut() {
                 element.widget_id = Some(format!("{:016x}", widget.value()));
                 element.response_id = Some(widget);
@@ -423,10 +439,20 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         let frame = ui.max_rect();
         let rect = frame;
         self.bodies.push((*panel, rect, ui.layer_id()));
+        // A panel in its own OS window draws in that window's coordinates: its automation
+        // elements carry the window so they are not matched against main-window points.
+        let viewport = ui.ctx().viewport_id();
+        if viewport != egui::ViewportId::ROOT
+            && let Some(index) = self.app.ui.dock.floating.iter().position(|window| window.contains(panel))
+        {
+            self.app.auto.windows.insert(viewport, index);
+        }
+        self.app.auto.viewport = viewport;
         self.app.auto.add(&format!("panel.{}", panel.id()), rect, panel.title());
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).id_salt(("panel", panel.id())));
         child.set_clip_rect(rect.intersect(ui.clip_rect()));
         panels::show(self.app, &mut child, *panel, rect);
+        self.app.auto.viewport = egui::ViewportId::ROOT;
         // The body fills its frame; allocating it lets a floated panel take its full size.
         ui.allocate_rect(ui.max_rect(), Sense::hover());
         // Painted after the body so child backgrounds cannot hide the focus outline (#1075).

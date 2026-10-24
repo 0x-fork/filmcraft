@@ -202,6 +202,15 @@ impl FilmcraftApp {
         })
     }
 
+    /// Whether a modal dialog is open: Settings, Recovery or Revert (egui `Modal`s), any other
+    /// egui `Modal` shown last frame, or a native file dialog. egui's `Modal` blocks input only
+    /// in the main window, so the dock area blocks its native windows meanwhile.
+    fn modal_open(&self, ctx: &egui::Context) -> bool {
+        matches!(self.dialog, Some(crate::Dialog::Preferences | crate::Dialog::Recovery | crate::Dialog::RevertConfirm))
+            || self.native_dialog_open()
+            || ctx.memory(|memory| memory.top_modal_layer().is_some())
+    }
+
     pub(crate) fn dock_area(&mut self, ui: &mut egui::Ui, body: Rect) {
         let t = self.tokens;
         let ctx = ui.ctx().clone();
@@ -223,8 +232,10 @@ impl FilmcraftApp {
         };
         let style = dock_style(ui, &t);
         // No `monitors`: the monitor list comes with the egui fork's `ViewportInfo::monitors`.
-        let mut area =
-            DockArea::new(area_id()).float_bounds(self.float_bounds(&ctx)).maximized(self.ui.keys.maximized.filter(|panel| self.ui.dock.is_docked(*panel)));
+        let mut area = DockArea::new(area_id())
+            .float_bounds(self.float_bounds(&ctx))
+            .maximized(self.ui.keys.maximized.filter(|panel| self.ui.dock.is_docked(*panel)))
+            .input_blocked(self.modal_open(&ctx));
         if let Some(panel) = self.pending_panel_raise.take() {
             area = area.raise_panel(panel);
         }

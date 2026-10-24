@@ -64,8 +64,8 @@ mod theme_favorites;
 pub mod widgets;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex};
 
 use egui::{TextureHandle, TextureOptions};
 use filmcraft_engine::{Services, Session};
@@ -323,6 +323,9 @@ pub struct FilmcraftApp {
     /// right button or two-finger click), so the app does the platform's translation itself.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     mac_ctrl_click_armed: bool,
+    /// [`Self::mac_ctrl_click_armed`] for each dock panel's own OS window, shared with the dock
+    /// area's input hook.
+    pub(crate) native_ctrl_click_armed: Arc<Mutex<HashMap<egui::ViewportId, bool>>>,
     /// The mouse press in progress (its start time) and the undo history when it began, for Escape
     /// to take back what the press changed (#580).
     value_press: Option<(f64, filmcraft_engine::UndoMark)>,
@@ -364,10 +367,14 @@ pub struct FilmcraftApp {
     /// The sequence whose view `ui.timeline` holds, and that view as it was last exchanged with
     /// `session.state.timeline_views` (see `sync_timeline_view`).
     timeline_view_of: Option<filmcraft_engine::project::ItemId>,
-    /// Items imported by an OS file drop, to place on the Timeline at the drop point this frame.
-    pending_timeline_drop: Option<(Vec<filmcraft_engine::project::ItemId>, egui::Pos2)>,
-    /// Files being dragged over the window from the OS (count, pointer): the Timeline previews where they would land.
-    file_drag_hover: Option<(usize, egui::Pos2)>,
+    /// Items imported by an OS file drop, to place on the Timeline at the drop point this frame
+    /// (in the coordinates of the viewport the files were dropped on).
+    pending_timeline_drop: Option<(Vec<filmcraft_engine::project::ItemId>, egui::Pos2, egui::ViewportId)>,
+    /// Files being dragged over a window from the OS (count, pointer, viewport): the Timeline previews where they would land.
+    file_drag_hover: Option<(usize, egui::Pos2, egui::ViewportId)>,
+    /// Files dragged over or dropped on dock panels in their own OS windows last frame; the
+    /// dock area reports them after the panels have drawn, so they are imported next frame.
+    window_files: Vec<craft_ui::docking::WindowFiles<PanelKind>>,
     timeline_view_last: Option<filmcraft_engine::project::SequenceView>,
     pub fps: f32,
     last_time: f64,
@@ -578,6 +585,7 @@ impl FilmcraftApp {
             last_ui_time: 0.0,
             synthetic: Vec::new(),
             mac_ctrl_click_armed: false,
+            native_ctrl_click_armed: Arc::default(),
             value_press: None,
             loudness: None,
             status_seen: (String::new(), 0.0),
@@ -599,6 +607,7 @@ impl FilmcraftApp {
             timeline_view_of: None,
             pending_timeline_drop: None,
             file_drag_hover: None,
+            window_files: Vec::new(),
             timeline_view_last: None,
             fps: 60.0,
             last_time: 0.0,
@@ -1466,51 +1475,69 @@ impl FilmcraftApp {
         })
     }
 
-    /// Import dropped files. With Timeline ▸ drop imports to the timeline, the new items are also
-    /// queued to be placed at the pointer (see `timeline::interact`).
+    /// Import dropped files, on the main window and on dock panels in their own OS windows.
+    /// With Timeline ▸ drop imports to the timeline, the new items are also queued to be placed
+    /// at the pointer (see `timeline::interact`).
     fn handle_drops(&mut self, ctx: &egui::Context) {
+        let to_timeline = self.session.prefs.timeline.drop_import_to_timeline;
         // While files hover, the OS sends no cursor events: poll the cursor each frame to draw the Timeline preview.
         let hovering = ctx.input(|i| i.raw.hovered_files.len());
-        self.file_drag_hover = if hovering > 0 && self.session.prefs.timeline.drop_import_to_timeline {
+        self.file_drag_hover = None;
+        if hovering > 0 && to_timeline {
             ctx.request_repaint();
-            self.drop_pointer(ctx).map(|p| (hovering, p))
-        } else {
-            None
-        };
-        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
-        let mut paths = Vec::new();
-        for f in dropped {
-            let p = f.path();
-            if p.exists() {
-                paths.push(p.to_string_lossy().to_string());
-            }
+            self.file_drag_hover = self.drop_pointer(ctx, egui::ViewportId::ROOT, None).map(|p| (hovering, p, egui::ViewportId::ROOT));
         }
-        if !paths.is_empty() {
-            let pointer = self.drop_pointer(ctx);
-            let imported = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0}));
-            if let Ok(v) = imported
-                && let Some(pos) = pointer
-                && self.session.prefs.timeline.drop_import_to_timeline
-            {
-                let items: Vec<filmcraft_engine::project::ItemId> =
-                    v["items"].as_array().map(|a| a.iter().filter_map(|i| i.as_u64()).map(filmcraft_engine::project::ItemId).collect()).unwrap_or_default();
-                if !items.is_empty() {
-                    self.pending_timeline_drop = Some((items, pos));
-                }
+        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        if !dropped.is_empty() {
+            let pointer = self.drop_pointer(ctx, egui::ViewportId::ROOT, None);
+            self.import_dropped(&dropped, pointer.map(|p| (p, egui::ViewportId::ROOT)));
+        }
+        for files in std::mem::take(&mut self.window_files) {
+            // Only the Timeline places files at the pointer; elsewhere they go to the bin.
+            let at_timeline = to_timeline && files.panel == PanelKind::Timeline;
+            let pointer = if at_timeline { self.drop_pointer(ctx, files.viewport, files.pos) } else { None };
+            if !files.hovered.is_empty() && self.file_drag_hover.is_none() && at_timeline {
+                ctx.request_repaint();
+                self.file_drag_hover = pointer.map(|p| (files.hovered.len(), p, files.viewport));
+            }
+            if !files.dropped.is_empty() {
+                self.import_dropped(&files.dropped, pointer.map(|p| (p, files.viewport)));
             }
         }
     }
 
-    /// Where files dragged in from the OS are over the window. The OS reports no cursor motion during such a drag
-    /// (winit, Windows), so ask it through the host hook, else use the last pointer position egui saw.
-    fn drop_pointer(&self, ctx: &egui::Context) -> Option<egui::Pos2> {
+    /// Import the dropped files that exist; with a pointer and Timeline ▸ drop imports to the
+    /// timeline, queue the new items for the Timeline drawn in that viewport.
+    fn import_dropped(&mut self, dropped: &[egui::DroppedFileHandle], pointer: Option<(egui::Pos2, egui::ViewportId)>) {
+        let paths: Vec<String> = dropped.iter().map(|f| f.path()).filter(|p| p.exists()).map(|p| p.to_string_lossy().to_string()).collect();
+        if paths.is_empty() {
+            return;
+        }
+        let imported = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0}));
+        if let Ok(v) = imported
+            && let Some((pos, viewport)) = pointer
+            && self.session.prefs.timeline.drop_import_to_timeline
+        {
+            let items: Vec<filmcraft_engine::project::ItemId> =
+                v["items"].as_array().map(|a| a.iter().filter_map(|i| i.as_u64()).map(filmcraft_engine::project::ItemId).collect()).unwrap_or_default();
+            if !items.is_empty() {
+                self.pending_timeline_drop = Some((items, pos, viewport));
+            }
+        }
+    }
+
+    /// Where files dragged in from the OS are over `viewport`. The OS reports no cursor motion during such a drag
+    /// (winit, Windows), so ask it through the host hook, else use `last` (a native window's last
+    /// pointer position), else the last pointer position egui saw in the main window.
+    fn drop_pointer(&self, ctx: &egui::Context, viewport: egui::ViewportId, last: Option<egui::Pos2>) -> Option<egui::Pos2> {
         let os_pointer = self
             .hooks
             .cursor_screen_position
             .as_ref()
             .and_then(|f| f())
-            .and_then(|px| ctx.input(|i| i.viewport().inner_rect.map(|r| screen_px_to_ui(px, i.pixels_per_point, r.min))));
-        os_pointer.or_else(|| ctx.input(|i| i.pointer.hover_pos().or(i.pointer.latest_pos())))
+            .and_then(|px| ctx.input_for(viewport, |i| i.viewport().inner_rect.map(|r| screen_px_to_ui(px, i.pixels_per_point, r.min))));
+        let fallback = || if viewport == egui::ViewportId::ROOT { ctx.input(|i| i.pointer.hover_pos().or(i.pointer.latest_pos())) } else { None };
+        os_pointer.or(last).or_else(fallback)
     }
 
     // ---------------------------------------------------------------- input
@@ -2094,6 +2121,34 @@ impl FilmcraftApp {
     }
 }
 
+/// `--control-input-only`: drop the window system's input. Screenshot responses and all
+/// viewport lifecycle and geometry data stay.
+fn drop_native_input(raw_input: &mut egui::RawInput) {
+    raw_input.events.retain(|event| matches!(event, egui::Event::Screenshot { .. }));
+    raw_input.hovered_files.clear();
+    raw_input.dropped_files.clear();
+}
+
+/// The main window's input rewrite ([`eframe::App::raw_input_hook`]) for a dock panel in its
+/// own OS window, which eframe does not run the hook for: macOS Control+Click becomes a
+/// secondary click, and `--control-input-only` drops the window system's input. Control
+/// gestures go to the main window only, so nothing is added.
+pub(crate) fn rewrite_native_window_input(
+    control_input_only: bool,
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))] armed: &Mutex<HashMap<egui::ViewportId, bool>>,
+    raw_input: &mut egui::RawInput,
+) {
+    if control_input_only {
+        drop_native_input(raw_input);
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut armed = armed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        synthesize_mac_ctrl_click(armed.entry(raw_input.viewport_id).or_default(), raw_input);
+    }
+}
+
 /// On macOS a Control+Click means "right click": AppKit delivers it to the view as a *primary*
 /// press carrying the Control modifier (`rightMouseDown:` only fires for a real right button or
 /// two-finger click), so the app translates it to a secondary click before egui computes pointer
@@ -2133,10 +2188,7 @@ impl eframe::App for FilmcraftApp {
             synthesize_mac_ctrl_click(&mut self.mac_ctrl_click_armed, raw_input);
         }
         if self.control_input_only {
-            // Preserve screenshot responses and all viewport lifecycle/geometry metadata.
-            raw_input.events.retain(|event| matches!(event, egui::Event::Screenshot { .. }));
-            raw_input.hovered_files.clear();
-            raw_input.dropped_files.clear();
+            drop_native_input(raw_input);
         }
         if self.control_input_only || !self.synthetic.is_empty() {
             // Native modifiers cannot replace those requested by a control gesture. A queued
@@ -3023,5 +3075,92 @@ mod native_menu_tests {
         app.sync_native_menu();
         assert_eq!(last(&sent, "edit.undo"), Some(false));
         assert_eq!(last(&sent, "edit.redo"), Some(true), "the undone edit can be redone");
+    }
+}
+
+#[cfg(test)]
+mod native_window_input_tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    use craft_ui::docking::WindowFiles;
+    use egui_kittest::Harness;
+    use filmcraft_engine::Session;
+
+    #[derive(Debug)]
+    struct OsFile(PathBuf);
+
+    impl egui::DroppedFile for OsFile {
+        fn path(&self) -> &Path {
+            &self.0
+        }
+
+        fn bytes(&self) -> Result<Vec<u8>, String> {
+            std::fs::read(&self.0).map_err(|e| e.to_string())
+        }
+    }
+
+    fn step(h: &mut Harness<'static, FilmcraftApp>) {
+        let ctx = h.ctx.clone();
+        let mut raw = std::mem::take(h.input_mut());
+        eframe::App::raw_input_hook(h.state_mut(), &ctx, &mut raw);
+        *h.input_mut() = raw;
+        ctx.request_repaint();
+        h.step();
+    }
+
+    fn clips(h: &Harness<'static, FilmcraftApp>) -> usize {
+        h.state().session.active_sequence().map_or(0, |q| q.video_tracks.iter().map(|t| t.items.len()).sum())
+    }
+
+    /// Files dropped on a dock panel in its own OS window are imported; on the Timeline they are
+    /// placed at the pointer, by the Timeline drawn in that window only.
+    #[test]
+    fn files_dropped_on_native_windows_import_and_reach_their_timeline() {
+        let dir = tempfile::tempdir().unwrap();
+        let still = dir.path().join("native_window_drop.png");
+        image::RgbaImage::from_pixel(64, 36, image::Rgba([40, 140, 220, 255])).save(&still).unwrap();
+        let mut s = Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        s.execute("file.newSequence", json!({"name": "Drop test", "width": 1280, "height": 720, "fps": 24})).unwrap();
+        let mut h = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).build_eframe(move |_cc| FilmcraftApp::new(s));
+        for _ in 0..4 {
+            step(&mut h);
+        }
+        let row = h.state().auto.find("timeline.track.V1.target").unwrap().rect;
+        let panel = h.state().auto.find("panel.Timeline").unwrap().rect;
+        let at = egui::pos2(panel[0] + h.state().ui.timeline.header_w + 60.0, row[1] + row[3] / 2.0);
+        let drop_files = |h: &mut Harness<'static, FilmcraftApp>, panel: PanelKind, viewport: egui::ViewportId| {
+            let files = WindowFiles { window: 1, viewport, panel, pos: Some(at), hovered: Vec::new(), dropped: vec![Arc::new(OsFile(still.clone()))] };
+            h.state_mut().window_files = vec![files];
+            step(h);
+            step(h);
+        };
+        let items = h.state().session.project.items.len();
+        // another window's Timeline: imported, and the main window's Timeline leaves it
+        drop_files(&mut h, PanelKind::Timeline, egui::ViewportId::from_hash_of("another window"));
+        assert_eq!((h.state().session.project.items.len(), clips(&h)), (items + 1, 0), "status: {}", h.state().ui.status);
+        // a panel other than the Timeline: imported to the bin only
+        drop_files(&mut h, PanelKind::Project, egui::ViewportId::ROOT);
+        assert_eq!((h.state().session.project.items.len(), clips(&h)), (items + 2, 0), "status: {}", h.state().ui.status);
+        // the Timeline drawn in the window the files were dropped on places them
+        drop_files(&mut h, PanelKind::Timeline, egui::ViewportId::ROOT);
+        assert_eq!((h.state().session.project.items.len(), clips(&h)), (items + 3, 1), "status: {}", h.state().ui.status);
+    }
+
+    /// `--control-input-only` drops a native window's own input as the main window's hook does.
+    #[test]
+    fn control_input_only_drops_native_window_input() {
+        let armed = Mutex::new(HashMap::new());
+        let mut raw = egui::RawInput { viewport_id: egui::ViewportId::from_hash_of("palette"), ..Default::default() };
+        raw.events = vec![egui::Event::Text("typing".into()), egui::Event::PointerMoved(egui::pos2(4.0, 4.0))];
+        raw.hovered_files.push(Default::default());
+        raw.dropped_files.push(Arc::new(OsFile(PathBuf::from("/unrelated-input.txt"))));
+        let mut kept = raw.clone();
+        rewrite_native_window_input(false, &armed, &mut kept);
+        assert_eq!(kept.events.len(), 2);
+        assert_eq!(kept.dropped_files.len(), 1);
+        rewrite_native_window_input(true, &armed, &mut raw);
+        assert!(raw.events.is_empty() && raw.hovered_files.is_empty() && raw.dropped_files.is_empty());
     }
 }

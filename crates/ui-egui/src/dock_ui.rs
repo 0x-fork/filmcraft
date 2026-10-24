@@ -232,10 +232,13 @@ impl FilmcraftApp {
         };
         let style = dock_style(ui, &t);
         // No `monitors`: the monitor list comes with the egui fork's `ViewportInfo::monitors`.
+        let control_input_only = self.control_input_only;
+        let armed = std::sync::Arc::clone(&self.native_ctrl_click_armed);
         let mut area = DockArea::new(area_id())
             .float_bounds(self.float_bounds(&ctx))
             .maximized(self.ui.keys.maximized.filter(|panel| self.ui.dock.is_docked(*panel)))
-            .input_blocked(self.modal_open(&ctx));
+            .input_blocked(self.modal_open(&ctx))
+            .native_input_hook(move |_ctx, raw_input| crate::rewrite_native_window_input(control_input_only, &armed, raw_input));
         if let Some(panel) = self.pending_panel_raise.take() {
             area = area.raise_panel(panel);
         }
@@ -253,6 +256,7 @@ impl FilmcraftApp {
             self.ui.focused = panel;
         }
         self.handle_forwarded_keys(&ctx, output.forwarded_events);
+        self.window_files = output.window_files;
         if let Some(error) = output.error {
             self.ui.status = error.to_string();
         }

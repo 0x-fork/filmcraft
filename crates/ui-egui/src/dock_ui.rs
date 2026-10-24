@@ -6,7 +6,9 @@
 
 use std::collections::HashMap;
 
-use craft_ui::docking::{Action, Divider, DockArea, DockCommand, DockContent, DockEvent, DockStyle, FloatSpace, Hit, Layout, ResizeEdge, Workspace};
+use craft_ui::docking::{
+    Action, Divider, DockArea, DockCommand, DockContent, DockEvent, DockStyle, FloatSpace, Hit, Layout, ResizeEdge, WindowKind, Workspace,
+};
 use egui::{Rect, Sense, Stroke, StrokeKind, vec2};
 use serde_json::{Value, json};
 
@@ -463,6 +465,15 @@ impl DockContent<PanelKind> for FilmContent<'_> {
     /// Every floating panel gets its own OS window on desktop.
     fn allow_native(&self, _panel: &PanelKind) -> bool {
         true
+    }
+
+    /// The video viewers float as normal windows, say on a second display; the other panels
+    /// are palettes.
+    fn window_kind(&self, panel: &PanelKind) -> WindowKind {
+        match panel {
+            PanelKind::Program | PanelKind::Source | PanelKind::ReferenceMonitor | PanelKind::LumetriScopes => WindowKind::Normal,
+            _ => WindowKind::Palette,
+        }
     }
 
     /// With no sequence open, the Timeline's tab says so.

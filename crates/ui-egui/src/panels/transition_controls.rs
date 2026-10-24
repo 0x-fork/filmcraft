@@ -179,7 +179,7 @@ pub fn effect_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, id
             changes.push(c);
         }
         let divider = Rect::from_min_max(pos2(split - 2.0, rect.min.y), pos2(split + 4.0, rect.max.y));
-        let dresp = ui.interact(divider, egui::Id::new("tr-ec-divider"), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+        let dresp = ui.interact(divider, egui::Id::unique("tr-ec-divider"), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
         if dresp.dragged() {
             app.ui.effect_controls_split = (list_w + dresp.drag_delta().x).clamp(MIN_LIST_W, max_list);
         }
@@ -252,7 +252,7 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
     let (_, cut, _) = trn::bounds(track, x)?;
     let clip_a = x.from.and_then(|c| track.item(c)).map(|it| (it.start, it.end(), it.name.clone()));
     let clip_b = x.to.and_then(|c| track.item(c)).map(|it| (it.start, it.end(), it.name.clone()));
-    let mem = egui::Id::new(("tr-ec-lane-drag", id.0));
+    let mem = egui::Id::unique(("tr-ec-lane-drag", id.0));
     let mut drag: Option<LaneDrag> = ui.data(|d| d.get_temp(mem));
     let v = drag.map_or_else(|| view(x, cut, frame), |d| d.view);
     let painter = ui.painter().with_clip_rect(lane.intersect(ui.clip_rect()));
@@ -311,7 +311,7 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
     elems.push(("effectControls.transition.timeline.ruler".into(), ruler, "time ruler".into()));
     // the ruler moves the playhead (once the sequence is no longer borrowed, below)
     let mut seek = None;
-    let rresp = ui.interact(ruler, egui::Id::new(("tr-ec-ruler", id.0)), Sense::click_and_drag());
+    let rresp = ui.interact(ruler, egui::Id::unique(("tr-ec-ruler", id.0)), Sense::click_and_drag());
     if (rresp.dragged() || rresp.clicked())
         && let Some(pos) = rresp.interact_pointer_pos()
     {
@@ -327,7 +327,7 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
             None
         }
     };
-    let sresp = ui.interact(span, egui::Id::new(("tr-ec-span", id.0)), Sense::click_and_drag());
+    let sresp = ui.interact(span, egui::Id::unique(("tr-ec-span", id.0)), Sense::click_and_drag());
     if let Some(h) = sresp.hover_pos() {
         ui.ctx().set_cursor_icon(if grab(h.x).is_some() { egui::CursorIcon::ResizeColumn } else { egui::CursorIcon::Grab });
     }
@@ -426,7 +426,7 @@ fn param_widget(ui: &mut egui::Ui, elems: &mut Elems, pid: &str, kind: &ParamKin
         }
         (ParamKind::Bool, ParamValue::Bool(b)) => {
             let mut b = *b;
-            let r = ui.checkbox(&mut b, "");
+            let r = crate::widgets::accessible_name(ui.checkbox(&mut b, ""), eid.clone());
             elems.push((eid, r.rect, b.to_string()));
             r.changed().then(|| json!({"params": { pid: b }}))
         }
@@ -444,7 +444,8 @@ fn param_widget(ui: &mut egui::Ui, elems: &mut Elems, pid: &str, kind: &ParamKin
                 }
             });
             elems.extend(options);
-            elems.push((eid, r.response.rect, shown.to_string()));
+            let response = crate::widgets::accessible_name(r.response, eid.clone());
+            elems.push((eid, response.rect, shown.to_string()));
             picked.map(|i| json!({"params": { pid: i }}))
         }
         (ParamKind::Color, ParamValue::Color(c)) => {

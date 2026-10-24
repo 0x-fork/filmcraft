@@ -55,7 +55,7 @@ impl Note {
         use filmcraft_ui_egui::i18n::{fmt, t};
         match self {
             Note::Fallback(device) => fmt(t("Audio hardware: the default output device cannot be opened; using '{device}'"), &[("device", device)]),
-            Note::NoDevice => t("No audio output device found: playing without sound (check Settings ▸ Audio Hardware)").to_string(),
+            Note::NoDevice => t("No audio output device found: playing without sound (check Settings > Audio Hardware)").to_string(),
         }
     }
 }

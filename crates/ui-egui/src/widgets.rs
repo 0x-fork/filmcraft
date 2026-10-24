@@ -6,16 +6,45 @@ use filmcraft_time::{FrameRate, Tick, parse_timecode};
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
 
+/// Give a widget an explicit accessible name without changing its visible hint text.
+///
+/// `egui_kittest` 0.37 hard-fails visible input roles that have neither a label nor a placeholder.
+/// Text fields that sit beside a drawn label (or that have no room for a placeholder) still need a
+/// stable name for screen readers and `get_by_label`.
+pub fn accessible_name(response: Response, name: impl Into<String>) -> Response {
+    let name = name.into();
+    if response.ctx.has_accesskit_node(response.id) {
+        response.ctx.accesskit_node_builder(response.id, |node| {
+            if node.label().is_none_or(|label| label.trim().is_empty()) {
+                node.set_label(name);
+            }
+        });
+    }
+    response
+}
+
 /// Premiere "hot text": a blue number you drag horizontally to scrub, click to type a number or a
-/// calculation ([`crate::calc`]).
+/// calculation ([`crate::calc`]). `label` is the property's accessible name (for example
+/// "Position X"), used when the field switches to a text editor so screen readers can tell the
+/// value fields apart.
 /// Returns (response, Some(new value) when changed).
-pub fn hot_number(ui: &mut Ui, id: egui::Id, value: f64, speed: f64, range: (f64, f64), decimals: usize, suffix: &str, t: &Tokens) -> (Response, Option<f64>) {
+pub fn hot_number(
+    ui: &mut Ui,
+    label: &str,
+    id: egui::Id,
+    value: f64,
+    speed: f64,
+    range: (f64, f64),
+    decimals: usize,
+    suffix: &str,
+    t: &Tokens,
+) -> (Response, Option<f64>) {
     let editing_id = id.with("editing");
     let edit_id = id.with("edit");
     let select_all_id = id.with("select-all");
     let mut editing: Option<String> = ui.data(|d| d.get_temp(editing_id));
     if let Some(buf) = editing.as_mut() {
-        let r = ui.add(egui::TextEdit::singleline(buf).id(edit_id).desired_width(56.0).font(Tokens::ui(12.0)));
+        let r = accessible_name(ui.add(egui::TextEdit::singleline(buf).id(edit_id).desired_width(56.0).font(Tokens::ui(12.0))), label);
         let mut out = None;
         if r.lost_focus() {
             // the field's own unit can be typed anywhere; calc ignores the common ones
@@ -109,7 +138,8 @@ pub fn timecode_field(
                 st.store(ui.ctx(), edit_id);
             }
         }
-        let r = ui.put(rect, egui::TextEdit::singleline(&mut buf).id(edit_id).font(Tokens::timecode()).desired_width(rect.width()));
+        let r =
+            accessible_name(ui.put(rect, egui::TextEdit::singleline(&mut buf).id(edit_id).font(Tokens::timecode()).desired_width(rect.width())), "Timecode");
         if r.lost_focus() {
             ui.data_mut(|d| d.remove::<String>(editing_id));
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -272,7 +302,10 @@ pub fn search_field(ui: &mut Ui, text: &mut String, hint: &str, width: f32, t: &
     icons::paint(ui.painter(), Rect::from_center_size(pos2(rect.min.x + 12.0, rect.center().y), vec2(12.0, 12.0)), Icon::Search, t.text_dim);
     let inner = Rect::from_min_max(pos2(rect.min.x + 22.0, rect.min.y + 2.0), pos2(rect.max.x - 8.0, rect.max.y - 2.0));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner));
-    let resp = child.add(egui::TextEdit::singleline(text).hint_text(hint).frame(egui::Frame::NONE).desired_width(inner.width()).font(Tokens::ui(12.0)));
+    let resp = accessible_name(
+        child.add(egui::TextEdit::singleline(text).hint_text(hint).frame(egui::Frame::NONE).desired_width(inner.width()).font(Tokens::ui(12.0))),
+        hint,
+    );
     // Select Find Box (Shift+F) / Open Search (Cmd+Shift+F)
     crate::panels::keyboard::take_search_focus(ui, rect, &resp);
     resp
@@ -364,16 +397,40 @@ mod tests {
         let input = egui::RawInput { events, ..Default::default() };
         // no renderer takes the font atlas upload here; drop it explicitly (epaint panics otherwise)
         ctx.run_ui(input, |ui| {
-            hot_number(ui, id, 123.5, 1.0, (0.0, 1000.0), 1, "", &t);
+            hot_number(ui, "Value", id, 123.5, 1.0, (0.0, 1000.0), 1, "", &t);
         })
         .textures_delta
         .clear();
     }
 
+    /// The edit field behind a hot number uses the caller's property label, not the generic
+    /// "Value", so Effect Controls and graphics fields are distinguishable by screen readers.
+    #[test]
+    fn a_hot_number_edit_field_uses_the_parameter_label() {
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::Queryable;
+        let id = egui::Id::unique("hot-labelled");
+        let mut harness = Harness::builder().with_size(egui::vec2(240.0, 60.0)).build_ui_state(
+            move |ui, _: &mut ()| {
+                let t = Tokens::for_kind(ThemeKind::Dark);
+                ui.data_mut(|d| {
+                    d.insert_temp(id.with("editing"), "12.5".to_string());
+                    d.insert_temp(id.with("select-all"), false);
+                });
+                hot_number(ui, "Position X", id, 12.5, 1.0, (-1000.0, 1000.0), 1, "", &t);
+            },
+            (),
+        );
+        harness.run_steps(2);
+        harness.check_accessibility();
+        assert!(harness.query_by_label("Position X").is_some(), "the field is reachable by its parameter label");
+        assert!(harness.query_by_label("Value").is_none(), "the generic label is gone");
+    }
+
     #[test]
     fn clicking_a_hot_number_selects_its_whole_value() {
         let ctx = egui::Context::default();
-        let id = egui::Id::new("hot");
+        let id = egui::Id::unique("hot");
         let pos = egui::pos2(14.0, 12.0);
         let button = |pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
         frame(&ctx, vec![egui::Event::PointerMoved(pos)], id);

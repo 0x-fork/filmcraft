@@ -6,7 +6,6 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::{
     FilmcraftApp,
-    dock::PanelKind,
     panels::monitor::{self, Which},
     theme::{self, ThemeKind},
 };
@@ -24,12 +23,11 @@ fn harness_at_scale(width: f32, kind: ThemeKind, which: Which, scale: f32) -> Ha
         move |ui, app: &mut FilmcraftApp| {
             app.set_theme(ui.ctx(), kind);
             app.auto.begin_frame();
-            let panel = if which == Which::Source { PanelKind::Source } else { PanelKind::Program };
-            // The panel frame as docking draws it: a tab strip over the themed panel background.
+            // A stand-in for the docked frame: the themed panel background, with the body below
+            // a tab strip's height.
             let frame = ui.max_rect();
             ui.painter().rect_filled(frame, 0.0, app.tokens.panel_bg);
             let content = egui::Rect::from_min_max(egui::pos2(frame.min.x, frame.min.y + app.tokens.tab_h), frame.max);
-            let _ = panel;
             monitor::show(app, ui, content, which);
             let source = filmcraft_ui_egui::panels::dragged_source(ui);
             ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("observed-source-drag"), source));

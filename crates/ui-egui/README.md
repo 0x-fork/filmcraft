@@ -78,17 +78,23 @@ keeps Source navigation, markers and marked-range playback separate from Program
 
 ## Pane layout controls
 
-Dock transactions and pointer targets use `craft-ui::docking`; bounded split geometry and
-keyboard-accessible resize handles use `craft-ui::layout`. FilmCraft adapts its existing saved
-dock tree and panel identities to the shared model. Panel tabs or their header grip can move
-between tab groups, split at an edge, reorder, or float when released with Cmd/Ctrl; a release
-over no target cancels. Floating windows move by their title bar, resize from every edge and
-split like the main window. Every group, Tools and the Audio Meters included, resizes down to
-the same minimum and has no maximum. Timeline sequence
-tabs retain their sequence-opening, closing and horizontal reorder behavior; the header grip
-moves the Timeline panel. Workspace saves retain floating groups alongside the legacy layout
-JSON, and workspaces without floating data still load. Automation IDs and workspace commands
-remain the integration boundary.
+The panels use `craft-ui::docking` with its split-tree settings: craft-ui draws the frames, tab
+strips, floating windows and drag previews and owns the gestures; `dock_ui.rs` draws the panel
+bodies, the ≡ panel menu and the Timeline's sequence tabs. Bounded split geometry and
+keyboard-accessible resize handles use `craft-ui::layout`. Panel tabs or their group's drag bar
+move between tab groups, split at a group's or the window's edge, reorder, or float when released
+with Cmd/Ctrl; a release over no target cancels. Every group, Tools and the Audio Meters included,
+resizes down to the same minimum and has no maximum. Timeline sequence tabs retain their
+sequence-opening, closing and horizontal reorder behavior.
+
+On desktop each floating panel opens in its own OS window. These windows stay above other
+windows and hide while another application is active. A floating window moves by its title bar,
+resizes from every edge and splits like the main window. On Wayland, drops between windows can't
+be resolved, so a floating window docks back only through a command such as `window.dockPanel`.
+Where egui embeds viewports (tests), floating windows stay inside the main window.
+
+Named workspaces save the layout, floating windows included; workspaces saved in the earlier
+layout format still load. Automation IDs and workspace commands remain the integration boundary.
 
 Tools and dock tabs expose their actual egui widget IDs, paint keyboard focus, and support
 Tab/Shift-Tab traversal and Space/Enter activation. Control-injected keys can reach focused

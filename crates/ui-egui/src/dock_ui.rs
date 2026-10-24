@@ -321,10 +321,8 @@ impl FilmcraftApp {
     /// (the group's drag bar), `panel.tabs.more.<Panel>`, `panel.float.<n>.move` and `.resize`,
     /// `dock.gutter.<path>` (`a`/`b` per split level), `dock.corner.<outer path>.<inner path>`
     /// where two dividers meet, the same inside floating window `n` as `panel.float.<n>.gutter.…`
-    /// and `panel.float.<n>.corner.…`, and `dock.gutter.group.<Panel>`, `.stack.<Panel>` and
-    /// `.column.<Panel>` for the dividers below a group or accordion entry and beside a column,
-    /// named by the panel they hold first. Controls of a floating window in its own OS window
-    /// are registered in that window's viewport.
+    /// and `panel.float.<n>.corner.…`. Controls of a floating window in its own OS window are
+    /// registered in that window's viewport.
     fn register_dock_hits(&mut self, hits: &[(Hit<PanelKind>, Rect)]) {
         let window = |panel: &PanelKind| self.ui.dock.floating.iter().position(|window| window.contains(panel));
         let native: HashMap<usize, egui::ViewportId> = self.auto.windows.iter().map(|(viewport, index)| (*index, *viewport)).collect();
@@ -355,9 +353,6 @@ impl FilmcraftApp {
                     None => continue,
                 },
                 Hit::Divider(Divider::Split(path)) => (format!("dock.gutter.{}", path_id(path)), "gutter"),
-                Hit::Divider(Divider::Group(panel)) => (format!("dock.gutter.group.{}", panel.id()), "gutter"),
-                Hit::Divider(Divider::Stack(panel)) => (format!("dock.gutter.stack.{}", panel.id()), "gutter"),
-                Hit::Divider(Divider::Column(panel)) => (format!("dock.gutter.column.{}", panel.id()), "gutter"),
                 Hit::Divider(Divider::Intersection(outer, inner)) => (format!("dock.corner.{}.{}", path_id(outer), path_id(inner)), "gutter corner"),
                 Hit::Divider(Divider::WindowSplit(panel, path)) => match window(panel) {
                     Some(index) => (format!("panel.float.{index}.gutter.{}", path_id(path)), "gutter"),

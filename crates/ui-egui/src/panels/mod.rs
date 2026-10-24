@@ -352,6 +352,10 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                         ui.separator();
                         close |= monitor::source_panel_menu(app, ui);
                     }
+                    if p == PanelKind::History {
+                        ui.separator();
+                        close |= misc::history_panel_menu(app, ui);
+                    }
                 });
             app.auto.add("panel.menu.scroll", scroll.inner_rect, "Panel menu");
         });

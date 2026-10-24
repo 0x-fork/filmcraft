@@ -164,6 +164,9 @@
 	Hide All Caption Tracks	隐藏所有字幕轨道
 	High Quality Playback	高质量播放
 	History	历史记录
+	Delete Redoable Actions	删除可重做的操作
+	Clear History	清除历史记录
+	Delete the dimmed actions after the current state? They cannot be redone.	删除当前状态之后显示为灰色的操作？删除后将无法重做。
 	Import From	导入来源
 	Import Image Sequence…	导入图像序列…
 	Import from Media Browser	从媒体浏览器导入

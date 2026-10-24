@@ -636,7 +636,8 @@ pub fn trim_delta(s: &Session, clip: ClipId, edge: Edge, mode: TrimMode, delta: 
 }
 
 /// The delta a roll of every cut in `pairs` can apply together: `delta` clamped by each pair's
-/// media and the frame left in each clip, each tried on a copy of `q`.
+/// media and the frame left in each clip, each tried on a copy of `q`. 0 when a pair would roll
+/// by another amount (a clip whose Out point is past the end of its media rolls the other way).
 fn clamp_roll_linked(q: &filmcraft_project::Sequence, pairs: &[(ClipId, ClipId)], delta: Tick, ctx: &mut edit::EditCtx) -> Result<Tick> {
     let mut d = delta;
     for &(pl, pr) in pairs {
@@ -644,6 +645,14 @@ fn clamp_roll_linked(q: &filmcraft_project::Sequence, pairs: &[(ClipId, ClipId)]
         let x = edit::roll(&mut probe, pl, pr, d, ctx)?;
         if x.abs() < d.abs() {
             d = x;
+        }
+    }
+    if d != Tick::ZERO {
+        for &(pl, pr) in pairs {
+            let mut probe = q.clone();
+            if edit::roll(&mut probe, pl, pr, d, ctx)? != d {
+                return Ok(Tick::ZERO);
+            }
         }
     }
     Ok(d)

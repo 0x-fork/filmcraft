@@ -70,6 +70,34 @@ fn roll_delta_stops_at_the_start_of_the_media() {
     assert_eq!(range(&s, right), (f(36), f(96)));
 }
 
+/// A clip whose Out point is past the end of its media (the file became shorter) cannot roll by
+/// a small amount: `edit::roll` would move its cut the other way. The roll moves nothing, and the
+/// preview and the roll both report 0.
+#[test]
+fn roll_delta_is_zero_when_a_clip_cannot_roll_by_the_asked_amount() {
+    let mut s = Session::default();
+    let [(v0, _), (v1, a1)] = two_clips(&mut s);
+    let rate = s.sequence_rate();
+    let f = |n: i64| rate.tick_of(n);
+    let item = s.active_sequence().unwrap().find_item(v0).unwrap().1.item;
+    match std::sync::Arc::make_mut(&mut s.project).items.get_mut(&item).map(|i| &mut i.kind) {
+        Some(filmcraft_project::ItemKind::Media(m)) => m.info.duration = f(94),
+        other => panic!("not media: {other:?}"),
+    }
+    for asked in [f(1), -f(1)] {
+        assert_eq!(crate::commands::roll_delta(&s, v0, v1, asked).unwrap(), Tick::ZERO, "{asked:?}");
+        let r = s.execute("timeline.roll", json!({"left": v0.0, "right": v1.0, "delta": asked.0})).unwrap();
+        assert_eq!(r["delta"], json!(0), "{r}");
+        assert_eq!(range(&s, v1), (f(48), f(96)), "the cut stays where it was");
+        assert_eq!(range(&s, a1), (f(48), f(96)));
+    }
+    assert_eq!(crate::commands::roll_delta(&s, v0, v1, -f(5)).unwrap(), -f(5), "a roll back into the media applies");
+    let r = s.execute("timeline.roll", json!({"left": v0.0, "right": v1.0, "delta": (-f(5)).0})).unwrap();
+    assert_eq!(r["delta"], json!((-f(5)).0), "{r}");
+    assert_eq!(range(&s, v1), (f(43), f(96)));
+    assert_eq!(range(&s, a1), (f(43), f(96)));
+}
+
 /// Linked selection off (or unlinked clips) rolls only the given pair and says so.
 #[test]
 fn roll_without_linked_selection_leaves_audio() {

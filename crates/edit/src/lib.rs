@@ -196,9 +196,10 @@ fn transition_anchor(track: &Track, tr: &Transition) -> Option<Tick> {
 }
 
 /// Keep transitions on their edit points after an edit moved cuts (ripple trim, roll, slide, ripple
-/// speed change): each transition shifts by as much as its anchor clip edge moved. A shifted
-/// transition between two clips stays within them (shortened when they are now shorter than it),
-/// and its stored alignment follows where that leaves it on the cut.
+/// speed change): each transition shifts by as much as its anchor clip edge moved. A transition
+/// between two clips stays within them, whether its cut moved or one of the clips got shorter
+/// (shortened when they are now shorter than it), and its stored alignment follows where that
+/// leaves it on the cut.
 fn transitions_follow_cuts(before: &Sequence, after: &mut Sequence) {
     let frame = after.settings.frame_rate.frame_duration();
     for track in after.all_tracks_mut() {
@@ -220,8 +221,7 @@ fn transitions_follow_cuts(before: &Sequence, after: &mut Sequence) {
             .collect();
         for (tr, (d, within)) in track.transitions.iter_mut().zip(shifts) {
             tr.start += d;
-            if d != Tick::ZERO
-                && let Some((lo, cut, hi)) = within
+            if let Some((lo, cut, hi)) = within
                 && (tr.start < lo || tr.end() > hi)
             {
                 tr.duration = tr.duration.min(hi - lo);

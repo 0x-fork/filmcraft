@@ -938,6 +938,33 @@ fn edits_that_move_a_cut_keep_its_transition_on_its_clips() {
     }
 }
 
+/// A ripple trim that shortens the second clip from its end leaves the cut where it is, and the
+/// transition on that cut still stays within its two clips.
+#[test]
+fn a_ripple_trim_of_the_second_clips_end_keeps_the_transition_within_it() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let a = fx.put(v1, 0, 10, 10);
+    let b = fx.put(v1, 10, 10, 10);
+    fx.seq.track_mut(v1).unwrap().transitions = vec![Transition {
+        id: TransitionId(1),
+        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        start: f(8),
+        duration: f(4),
+        from: Some(a),
+        to: Some(b),
+        align: TransitionAlign::CenterAtCut,
+        reverse: false,
+    }];
+    let mut n = fx.next;
+    trim(&mut fx.seq, b, Edge::Out, TrimMode::Ripple, -f(9), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(fx.spans(v1), vec![(0, 10), (10, 1)]);
+    let tr = &fx.seq.track(v1).unwrap().transitions[0];
+    assert_eq!((tr.start, tr.duration), (f(7), f(4)), "the transition ends with the second clip");
+    assert_eq!(tr.align, TransitionAlign::CenterAtCut);
+    fx.seq.check().unwrap();
+}
+
 /// #374: moving an edge must not change which media sits under any timeline time the clip still
 /// covers (the timeline's live trim preview draws its waveform from this item), and must leave the
 /// item as the trim itself does.

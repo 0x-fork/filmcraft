@@ -255,10 +255,13 @@ fn panel_under_pointer(app: &FilmcraftApp, ctx: &egui::Context) -> Option<PanelK
     })
 }
 
-/// Visible panels in layout order (the active tab of each frame).
+/// Visible panels in layout order (the active tab of each frame), without the narrow Tools and
+/// Audio Meters strips, which panel cycling skips.
 fn visible_panels(app: &FilmcraftApp) -> Vec<PanelKind> {
     use crate::dock::LayoutExt as _;
-    app.ui.dock.visible_panels()
+    let mut v = app.ui.dock.visible_panels();
+    v.retain(|p| !matches!(p, PanelKind::Tools | PanelKind::AudioMeters));
+    v
 }
 
 fn cycle_panel(app: &mut FilmcraftApp, next: bool) -> Value {

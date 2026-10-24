@@ -206,6 +206,24 @@ fn new_keys_work_in_the_app() {
     assert_eq!(d.app().ui.program.zoom, None);
 }
 
+/// Select Next / Previous Panel skip the narrow Tools and Audio Meters strips.
+#[test]
+fn panel_cycling_skips_tools_and_audio_meters() {
+    use filmcraft_ui_egui::dock::{LayoutExt as _, PanelKind};
+    let mut d = Driver::new();
+    let shown = d.app().ui.dock.visible_panels();
+    assert!(shown.contains(&PanelKind::Tools) && shown.contains(&PanelKind::AudioMeters), "{shown:?}");
+    for key in ["Ctrl+Shift+.", "Ctrl+Shift+,"] {
+        let mut seen = Vec::new();
+        for _ in 0..shown.len() * 2 {
+            d.key(key);
+            seen.push(d.app().ui.focused);
+        }
+        assert!(!seen.contains(&PanelKind::Tools) && !seen.contains(&PanelKind::AudioMeters), "{key}: {seen:?}");
+        assert!(seen.len() > 1 && seen.iter().any(|p| *p != seen[0]), "{key} cycles: {seen:?}");
+    }
+}
+
 /// Off macOS the menus show `Ctrl+…`, so that is what agents send: a `Ctrl` chord through
 /// `ui.key` (and `ctrl` in `ui.click` modifiers) must act like the physical key, which egui-winit
 /// reports as `ctrl` + `command`. Bindings are written `Cmd+…`, so this failed to match (#245).

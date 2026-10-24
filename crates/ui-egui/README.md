@@ -83,15 +83,22 @@ strips, floating windows and drag previews and owns the gestures; `dock_ui.rs` d
 bodies, the ≡ panel menu and the Timeline's sequence tabs. Bounded split geometry and
 keyboard-accessible resize handles use `craft-ui::layout`. Panel tabs or their group's drag bar
 move between tab groups, split at a group's or the window's edge, reorder, or float when released
-with Cmd/Ctrl; a release over no target cancels. Every group, Tools and the Audio Meters included,
-resizes down to the same minimum and has no maximum. Timeline sequence tabs retain their
-sequence-opening, closing and horizontal reorder behavior.
+with Cmd/Ctrl; a release over no target cancels. Tools and the Audio Meters keep their widths
+as the window resizes (fixed split sizes, which a divider drag keeps fixed); the other groups
+resize with the window. Every group resizes down to the same minimum and has no maximum.
+Timeline sequence tabs retain their sequence-opening, closing and horizontal reorder behavior.
 
-On desktop each floating panel opens in its own OS window. These windows stay above other
-windows and hide while another application is active. A floating window moves by its title bar,
-resizes from every edge and splits like the main window. On Wayland, drops between windows can't
-be resolved, so a floating window docks back only through a command such as `window.dockPanel`.
-Where egui embeds viewports (tests), floating windows stay inside the main window.
+On desktop each floating panel opens in its own OS window. Tool panels are palettes: they stay
+above other windows and hide while another application is active. The video viewers (Program,
+Source, Reference Monitor, Lumetri Scopes) are normal windows, say on a second display: they
+stack with the main window and stay shown in the background. A floating window moves by its
+title bar, resizes from every edge and splits like the main window. While a modal dialog is open
+(Settings, Recovery, Revert, a file dialog), the native windows are dimmed and take no input.
+The main window's input rewrite (macOS Control+Click as a secondary click,
+`--control-input-only`) also runs in each native window, and files dropped on one are imported
+like files dropped on the main window; on the Timeline they land at the drop point. On Wayland
+floating windows stay inside the main window. Where egui embeds viewports (tests), floating
+windows stay inside the main window too.
 
 Named workspaces save the layout, floating windows included; workspaces saved in the earlier
 layout format still load. While every floating window is one tab group, a save also writes the

@@ -2140,12 +2140,9 @@ pub(crate) fn rewrite_native_window_input(
 ) {
     if control_input_only {
         drop_native_input(raw_input);
-        return;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let mut armed = armed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        synthesize_mac_ctrl_click(armed.entry(raw_input.viewport_id).or_default(), raw_input);
+    } else {
+        #[cfg(target_os = "macos")]
+        synthesize_mac_ctrl_click(armed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(raw_input.viewport_id).or_default(), raw_input);
     }
 }
 

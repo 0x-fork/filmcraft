@@ -239,66 +239,18 @@ pub fn find(prefs: &WorkspacePrefs, query: &str) -> Option<String> {
 }
 
 /// A workspace as saved: the user's saved version, else the built-in default. An entry that
-/// does not read or validate falls back to the default and stays in the file untouched. Fixed
-/// split sizes load as ratios.
+/// does not read or validate falls back to the default and stays in the file untouched.
 pub fn saved_workspace(prefs: &WorkspacePrefs, name: &str) -> Workspace {
     let saved = prefs.saved.iter().find(|saved| saved.name == name).and_then(|saved| {
-        let mut workspace = if saved.workspace.is_null() {
+        let workspace = if saved.workspace.is_null() {
             Workspace::new(legacy::layout(&saved.layout, &saved.floating)?)
         } else {
             serde_json::from_value::<Workspace>(saved.workspace.clone()).ok()?
         };
         workspace.validate().ok()?;
-        ratio_layout(&mut workspace.layout);
-        if let Some(layout) = workspace.saved.as_mut() {
-            ratio_layout(layout);
-        }
         Some(workspace)
     });
     saved.unwrap_or_else(|| Workspace::new(workspace(name)))
-}
-
-/// The docked area of a 1600 x 1000 pt window, which a fixed split size from a saved layout is
-/// measured against when it loads as a ratio.
-const NOMINAL_DOCK: egui::Vec2 = vec2(1600.0, 939.0);
-/// The gap between groups (`Tokens::gap`).
-const GAP: f32 = 4.0;
-
-/// Saved layouts may hold fixed split sizes (older FilmCraft versions wrote them); every split
-/// loads as the ratio it had at the nominal window size, so a window resize scales all groups.
-fn ratio_layout(layout: &mut Layout) {
-    if let Some(root) = layout.root.as_mut() {
-        ratio_splits(root, NOMINAL_DOCK, 0);
-    }
-    for window in &mut layout.floating {
-        let [_, _, width, height] = window.rect;
-        ratio_splits(&mut window.root, vec2(width, height), 0);
-    }
-}
-
-fn ratio_splits(node: &mut Node<PanelKind>, size: egui::Vec2, depth: usize) {
-    if depth > craft_ui::docking::MAX_DEPTH {
-        return;
-    }
-    let Node::Split { axis, size: split, first, second } = node else { return };
-    let extent = match axis {
-        SplitAxis::Horizontal => size.x,
-        SplitAxis::Vertical => size.y,
-    };
-    let available = (extent - GAP).max(1.0);
-    let ratio = match *split {
-        SplitSize::Ratio(ratio) => ratio,
-        SplitSize::FixedFirst(points) => points / available,
-        SplitSize::FixedSecond(points) => 1.0 - points / available,
-    };
-    let ratio = if ratio.is_finite() { ratio.clamp(0.0, 1.0) } else { 0.5 };
-    *split = SplitSize::Ratio(ratio);
-    let (a, b) = match axis {
-        SplitAxis::Horizontal => (vec2(available * ratio, size.y), vec2(available * (1.0 - ratio), size.y)),
-        SplitAxis::Vertical => (vec2(size.x, available * ratio), vec2(size.x, available * (1.0 - ratio))),
-    };
-    ratio_splits(first, a, depth + 1);
-    ratio_splits(second, b, depth + 1);
 }
 
 /// The saved layout of a workspace (see [`saved_workspace`]).
@@ -457,6 +409,11 @@ mod legacy {
     }
 }
 
+/// The width of the Tools panel in the built-in workspaces, in points.
+const TOOLS_WIDTH: f32 = 64.0;
+/// The width of the Audio Meters in the built-in workspaces, in points.
+const METERS_WIDTH: f32 = 116.0;
+
 /// The default layout of a named workspace.
 pub fn workspace(name: &str) -> Layout {
     Layout { root: Some(workspace_root(name)), floating: vec![] }
@@ -465,10 +422,15 @@ pub fn workspace(name: &str) -> Layout {
 fn workspace_root(name: &str) -> Node<PanelKind> {
     use PanelKind::*;
     use SplitSize::Ratio;
-    // Tools | Timeline | Audio Meters. The ratios start Tools about 64 pt and the meters about
-    // 116 pt wide in a 1600 pt window; all three resize like any other group.
-    let bottom_editing =
-        |tools: f32, timeline: f32| hsplit(Ratio(tools), tabs(&[Tools], 0), hsplit(Ratio(timeline), tabs(&[Timeline], 0), tabs(&[AudioMeters], 0)));
+    // Tools | Timeline | Audio Meters. Tools and the meters keep their widths as the window
+    // resizes; the Timeline takes the rest.
+    let bottom_editing = || {
+        hsplit(
+            SplitSize::FixedFirst(TOOLS_WIDTH),
+            tabs(&[Tools], 0),
+            hsplit(SplitSize::FixedSecond(METERS_WIDTH), tabs(&[Timeline], 0), tabs(&[AudioMeters], 0)),
+        )
+    };
     match name {
         "Assembly" => vsplit(
             Ratio(0.52),
@@ -477,14 +439,14 @@ fn workspace_root(name: &str) -> Node<PanelKind> {
                 tabs(&[Project, MediaBrowser, Libraries, Info, Effects, Markers, History], 0),
                 hsplit(Ratio(0.5), tabs(&[Source, EffectControls, AudioClipMixer, Metadata], 0), tabs(&[Program], 0)),
             ),
-            bottom_editing(0.04, 0.92),
+            bottom_editing(),
         ),
         "Color" => hsplit(
             Ratio(0.79),
             vsplit(
                 Ratio(0.58),
                 hsplit(Ratio(0.42), tabs(&[LumetriScopes, Source, EffectControls], 0), tabs(&[Program], 0)),
-                hsplit(Ratio(0.3), tabs(&[Project, Info, Markers, History], 0), bottom_editing(0.07, 0.86)),
+                hsplit(Ratio(0.3), tabs(&[Project, Info, Markers, History], 0), bottom_editing()),
             ),
             tabs(&[LumetriColor, Effects], 0),
         ),
@@ -493,7 +455,7 @@ fn workspace_root(name: &str) -> Node<PanelKind> {
             vsplit(
                 Ratio(0.5),
                 hsplit(Ratio(0.5), tabs(&[Source, EffectControls, AudioClipMixer], 1), tabs(&[Program], 0)),
-                hsplit(Ratio(0.3), tabs(&[Project, MediaBrowser, Info, Markers, History], 0), bottom_editing(0.07, 0.86)),
+                hsplit(Ratio(0.3), tabs(&[Project, MediaBrowser, Info, Markers, History], 0), bottom_editing()),
             ),
             vsplit(Ratio(0.5), tabs(&[Effects], 0), tabs(&[EssentialGraphics], 0)),
         ),
@@ -502,7 +464,7 @@ fn workspace_root(name: &str) -> Node<PanelKind> {
             vsplit(
                 Ratio(0.5),
                 hsplit(Ratio(0.5), tabs(&[AudioTrackMixer, Source, AudioClipMixer, EffectControls], 0), tabs(&[Program], 0)),
-                hsplit(Ratio(0.3), tabs(&[Project, MediaBrowser, Effects, Markers, History], 0), bottom_editing(0.07, 0.86)),
+                hsplit(Ratio(0.3), tabs(&[Project, MediaBrowser, Effects, Markers, History], 0), bottom_editing()),
             ),
             tabs(&[EssentialSound, TextToSpeech], 0),
         ),
@@ -511,7 +473,7 @@ fn workspace_root(name: &str) -> Node<PanelKind> {
             vsplit(
                 Ratio(0.5),
                 hsplit(Ratio(0.4), tabs(&[Text, Source, EffectControls], 0), tabs(&[Program], 0)),
-                hsplit(Ratio(0.3), tabs(&[Project, MediaBrowser, Libraries], 0), bottom_editing(0.07, 0.86)),
+                hsplit(Ratio(0.3), tabs(&[Project, MediaBrowser, Libraries], 0), bottom_editing()),
             ),
             tabs(&[EssentialGraphics, Properties], 0),
         ),
@@ -522,7 +484,7 @@ fn workspace_root(name: &str) -> Node<PanelKind> {
                 tabs(&[Source, EffectControls, AudioClipMixer, Metadata, LumetriScopes, Text], 0),
                 hsplit(Ratio(0.6), tabs(&[Program], 0), tabs(&[LumetriColor, EssentialGraphics, EssentialSound, TextToSpeech, Properties, AudioTrackMixer], 0)),
             ),
-            hsplit(Ratio(0.26), tabs(&[Project, MediaBrowser, Libraries, Info, Effects, Markers, History], 0), bottom_editing(0.055, 0.9)),
+            hsplit(Ratio(0.26), tabs(&[Project, MediaBrowser, Libraries, Info, Effects, Markers, History], 0), bottom_editing()),
         ),
         // Editing (default), Learning, Review — Premiere 26 factory layout:
         // top: Source group | Program | Properties; bottom: Project group | Tools | Timeline | Meters.
@@ -533,7 +495,7 @@ fn workspace_root(name: &str) -> Node<PanelKind> {
                 hsplit(Ratio(0.5), tabs(&[Source, EffectControls, AudioClipMixer, Metadata], 0), tabs(&[Program], 0)),
                 tabs(&[Properties, EssentialGraphics, Text], 0),
             ),
-            hsplit(Ratio(0.29), tabs(&[Project, MediaBrowser, Libraries, Info, Effects, Markers, History], 0), bottom_editing(0.06, 0.89)),
+            hsplit(Ratio(0.29), tabs(&[Project, MediaBrowser, Libraries, Info, Effects, Markers, History], 0), bottom_editing()),
         ),
     }
 }
@@ -591,7 +553,7 @@ impl LayoutExt for Layout {
             match n {
                 Node::Split { first, second, .. } => beside_meters(first) || beside_meters(second),
                 Node::Tabs { panels, .. } if panels.as_slice() == [PanelKind::AudioMeters] => {
-                    *n = hsplit(SplitSize::Ratio(0.85), tabs(&[PanelKind::Timeline], 0), tabs(&[PanelKind::AudioMeters], 0));
+                    *n = hsplit(SplitSize::FixedSecond(METERS_WIDTH), tabs(&[PanelKind::Timeline], 0), tabs(&[PanelKind::AudioMeters], 0));
                     true
                 }
                 _ => false,
@@ -847,43 +809,50 @@ mod tests {
         }
     }
 
-    fn fixed_splits(node: &Node<PanelKind>) -> usize {
+    /// The fixed sizes of a tree's splits, depth first.
+    fn fixed_splits(node: &Node<PanelKind>) -> Vec<SplitSize> {
         match node {
-            Node::Split { size, first, second, .. } => usize::from(!matches!(size, SplitSize::Ratio(_))) + fixed_splits(first) + fixed_splits(second),
-            _ => 0,
+            Node::Split { size, first, second, .. } => {
+                let mut out = if matches!(size, SplitSize::Ratio(_)) { vec![] } else { vec![*size] };
+                out.extend(fixed_splits(first));
+                out.extend(fixed_splits(second));
+                out
+            }
+            _ => vec![],
         }
     }
 
-    /// Every group of a built-in workspace resizes with the window: no split keeps a fixed size.
+    /// In every built-in workspace Tools and the Audio Meters keep their widths as the window
+    /// resizes; every other group resizes with it.
     #[test]
-    fn workspaces_use_ratio_splits() {
+    fn workspaces_fix_only_tools_and_meters() {
         for w in WORKSPACES {
             let layout = workspace(w);
-            assert_eq!(layout.root.as_ref().map_or(0, fixed_splits), 0, "{w}");
+            let fixed = layout.root.as_ref().map(fixed_splits).unwrap_or_default();
+            assert_eq!(fixed, vec![SplitSize::FixedFirst(TOOLS_WIDTH), SplitSize::FixedSecond(METERS_WIDTH)], "{w}");
         }
     }
 
-    /// A saved v1 workspace with fixed split sizes, docked and floating, loads with ratios that
-    /// keep its proportions at the nominal window size.
+    /// A saved workspace keeps its fixed split sizes, docked and floating, and its ratios.
     #[test]
-    fn fixed_splits_in_saved_workspaces_load_as_ratios() {
+    fn saved_workspaces_keep_fixed_and_ratio_splits() {
         let workspace = serde_json::json!({"layout": {"root": {"Split": {"axis": "Horizontal", "size": {"FixedSecond": 450.0},
-            "first": {"Split": {"axis": "Horizontal", "size": {"FixedFirst": 64.0},
+            "first": {"Split": {"axis": "Horizontal", "size": {"Ratio": 0.25},
                 "first": {"Tabs": {"panels": ["Tools"], "active": 0}}, "second": {"Tabs": {"panels": ["Timeline"], "active": 0}}}},
             "second": {"Tabs": {"panels": ["AudioMeters"], "active": 0}}}},
-            "floating": [{"groups": [{"panels": ["Info"], "active": 0, "open": true, "height": 100.0},
-                {"panels": ["Effects"], "active": 0, "open": true, "height": 200.0}], "rect": [10.0, 20.0, 300.0, 304.0]}]}, "hidden": []});
+            "floating": [{"root": {"Split": {"axis": "Vertical", "size": {"FixedFirst": 100.0},
+                "first": {"Tabs": {"panels": ["Info"], "active": 0}}, "second": {"Tabs": {"panels": ["Effects"], "active": 0}}}},
+                "rect": [10.0, 20.0, 300.0, 304.0]}]}, "hidden": []});
         let prefs = WorkspacePrefs { saved: vec![SavedWorkspace { name: "Mine".into(), workspace, ..Default::default() }], current: "Mine".into() };
         let loaded = saved_docking(&prefs, "Mine");
         assert!(loaded.is_docked(PanelKind::Tools) && loaded.is_visible(PanelKind::Info) && loaded.is_visible(PanelKind::Effects), "{loaded:?}");
         let root = loaded.root.as_ref().unwrap();
-        assert_eq!(fixed_splits(root), 0, "{root:?}");
-        assert!(loaded.floating.iter().all(|window| fixed_splits(&window.root) == 0), "{:?}", loaded.floating);
-        let Node::Split { size: SplitSize::Ratio(outer), first, .. } = root else { panic!("{root:?}") };
-        let available = NOMINAL_DOCK.x - GAP;
-        assert!((outer - (available - 450.0) / available).abs() < 1e-4, "{outer}");
+        let Node::Split { size: SplitSize::FixedSecond(outer), first, .. } = root else { panic!("{root:?}") };
+        assert_eq!(*outer, 450.0);
         let Node::Split { size: SplitSize::Ratio(inner), .. } = &**first else { panic!("{first:?}") };
-        assert!((inner - 64.0 / (available * outer - GAP)).abs() < 1e-4, "{inner}");
+        assert_eq!(*inner, 0.25);
+        let floating: Vec<_> = loaded.floating.iter().flat_map(|window| fixed_splits(&window.root)).collect();
+        assert_eq!(floating, vec![SplitSize::FixedFirst(100.0)], "{:?}", loaded.floating);
     }
 
     /// #284: with Project and Program closed (or every panel closed) a panel still opens.
@@ -916,9 +885,9 @@ mod tests {
         let prefs: WorkspacePrefs = serde_json::from_value(legacy).unwrap();
         let mine = saved_docking(&prefs, "Mine");
         assert!(mine.is_visible(PanelKind::Info) && mine.is_visible(PanelKind::Timeline) && mine.is_visible(PanelKind::Effects));
-        // the fixed 300 pt Project column loads as its share of the nominal 1600 pt window
-        let Some(Node::Split { size: SplitSize::Ratio(ratio), .. }) = mine.root else { panic!("{:?}", mine.root) };
-        assert!((ratio - 300.0 / (NOMINAL_DOCK.x - GAP)).abs() < 1e-4, "{ratio}");
+        // the Project column keeps its fixed 300 pt
+        let Some(Node::Split { size, .. }) = &mine.root else { panic!("{:?}", mine.root) };
+        assert_eq!(*size, SplitSize::FixedFirst(300.0));
         assert_eq!(saved_docking(&prefs, "Broken"), workspace("Broken"));
         let saved = SavedWorkspace { name: "Mine".into(), workspace: serde_json::to_value(Workspace::new(mine.clone())).unwrap(), ..Default::default() };
         let prefs = WorkspacePrefs { saved: vec![saved], current: "Mine".into() };

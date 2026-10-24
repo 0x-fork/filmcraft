@@ -339,6 +339,14 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                         }
                         ui.checkbox(&mut app.ui.timeline.show_thumbnails, tl!("Video Thumbnails"));
                         ui.checkbox(&mut app.ui.timeline.show_waveforms, tl!("Audio Waveforms"));
+                        let mut work_area = app.session.active_sequence().is_some_and(|q| q.work_area.is_some());
+                        let r = ui.add_enabled(app.session.state.active_sequence.is_some(), egui::Checkbox::new(&mut work_area, tl!("Work Area Bar")));
+                        app.auto.add("panel.menu.Timeline.workAreaBar", r.rect, "Work Area Bar");
+                        if r.changed()
+                            && let Err(e) = app.session.execute("sequence.workAreaBar", serde_json::json!({"show": work_area}))
+                        {
+                            app.ui.status = e.to_string();
+                        }
                     }
                     if p == PanelKind::Project {
                         ui.separator();

@@ -511,6 +511,10 @@
 	Reveal Sequence in Project	Mostrar secuencia en el proyecto
 	Video Thumbnails	Miniaturas de video
 	Audio Waveforms	Formas de onda de audio
+	Work Area Bar	Barra de área de trabajo
+	Start: {tc}	Inicio: {tc}
+	End: {tc}	Fin: {tc}
+	Duration: {tc}	Duración: {tc}
 	Delete Preset	Eliminar ajuste preestablecido
 	Export Preset…	Exportar ajuste preestablecido…
 	Import Presets…	Importar ajustes preestablecidos…

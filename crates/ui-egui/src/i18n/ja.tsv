@@ -508,6 +508,10 @@
 	Reveal Sequence in Project	プロジェクトでシーケンスを表示
 	Video Thumbnails	ビデオサムネイル
 	Audio Waveforms	オーディオ波形
+	Work Area Bar	ワークエリアバー
+	Start: {tc}	開始: {tc}
+	End: {tc}	終了: {tc}
+	Duration: {tc}	長さ: {tc}
 	Delete Preset	プリセットを削除
 	Export Preset…	プリセットを書き出し…
 	Import Presets…	プリセットを読み込み…

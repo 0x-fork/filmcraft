@@ -68,6 +68,7 @@ mod timeline_tabs_ui;
 mod timeline_track_height_ui;
 mod timeline_transition_move_ui;
 mod timeline_trim_ui;
+mod timeline_work_area_ui;
 mod track_color_ui;
 mod track_select_drag_ui;
 mod transcript_ui;

@@ -502,6 +502,10 @@
 	Reveal Sequence in Project	在项目面板中显示序列
 	Video Thumbnails	视频缩略图
 	Audio Waveforms	音频波形
+	Work Area Bar	工作区域栏
+	Start: {tc}	开始：{tc}
+	End: {tc}	结束：{tc}
+	Duration: {tc}	持续时间：{tc}
 	Delete Preset	删除预设
 	Export Preset…	导出预设…
 	Import Presets…	导入预设…

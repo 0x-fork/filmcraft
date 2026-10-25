@@ -158,8 +158,12 @@ fn duplicate_selection_delete_matches_unique_selection_with_and_without_links() 
             if !linked {
                 s.execute("timeline.setTrack", json!({"track": a_track.0, "syncLock": false})).unwrap();
             }
-            s.state.selection = vec![v.id, v.id];
-            assert_selection_edit_matches_control(&mut s, vec![v.id], command, json!({}));
+            // Clear and Ripple Delete act on the selection as it is: selecting the clip takes its
+            // partner along only with Linked Selection on
+            s.execute("timeline.select", json!({"clips": [v.id.0]})).unwrap();
+            let unique = s.state.selection.clone();
+            s.state.selection = unique.iter().chain(&unique).copied().collect();
+            assert_selection_edit_matches_control(&mut s, unique, command, json!({}));
             assert!(s.active_sequence().unwrap().find_item(v.id).is_none());
             assert_eq!(s.active_sequence().unwrap().find_item(a.id).is_none(), linked);
             assert!(s.state.selection.is_empty());

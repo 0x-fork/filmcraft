@@ -2328,12 +2328,9 @@ pub fn install_ime_reset_callbacks(ctx: &egui::Context) {
 }
 
 impl FilmcraftApp {
-    pub fn logic_inner(&mut self, ctx: &egui::Context) {
-        // Remember the pass's clock before anything reads `now()`. A hidden logic-only tick keeps
-        // the last UI time (which is stale there), so `now()` never runs behind the host clock.
-        self.ui_clock = self.ui_clock.max(ctx.input(|i| i.time));
-        // a native file dialog's answer first, so the panels draw what it chose (#260)
-        self.poll_native_dialog(ctx);
+    /// Install the theme once, then keep fonts ready; a saved language without its system face
+    /// falls back to English as before.
+    fn logic_theme(&mut self, ctx: &egui::Context) {
         if !self.styled {
             theme::install(ctx, &self.tokens);
             // theme::install replaces the fonts: add the system Japanese font back (or fall back to
@@ -2351,6 +2348,11 @@ impl FilmcraftApp {
         } else {
             self.fonts_ready = true;
         }
+    }
+
+    /// Advance the monotonic host clock and the smoothed frame rate, returning the pass time.
+    /// Hidden playback is marked so a hidden window's skipped frames are not counted as drops.
+    fn logic_clock(&mut self, ctx: &egui::Context) -> f64 {
         // Monotonic host time. Native and web both call logic once per layout pass and through
         // `run_logic` while hidden; `ctx.input(i.time)` is stale in that second case.
         let now = self.now();
@@ -2363,6 +2365,11 @@ impl FilmcraftApp {
             // Nothing is shown while the window is hidden: not a dropped frame.
             self.playback.hidden = true;
         }
+        now
+    }
+
+    /// Close-request handling and control-driven synthetic input, in the original order.
+    fn logic_control(&mut self, ctx: &egui::Context) {
         // Quitting with unsaved changes asks to save them first.
         if ctx.input(|i| i.viewport().close_requested()) && panels::clip_dialogs::intercept_quit(self) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -2380,8 +2387,10 @@ impl FilmcraftApp {
             // honours this; the pinned web runner logs it as unhandled (a recorded fork gap).
             ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaintWhileHidden);
         }
+    }
 
-        // Background work: consumed queues and idempotent deadlines, safe on every logic call.
+    /// Background queues and idempotent deadlines that are safe on every logic call.
+    fn logic_background(&mut self, ctx: &egui::Context, now: f64) {
         self.frames.set_context(ctx);
         self.frames.pump(std::time::Duration::from_millis(if self.playback.playing { 24 } else { 40 }));
         self.session.poll_persistence();
@@ -2396,6 +2405,10 @@ impl FilmcraftApp {
         self.sync_pool();
         #[cfg(not(target_arch = "wasm32"))]
         self.tick_media_refresh(ctx, now);
+    }
+
+    /// Apply engine events that change the active sequence/view, IME target, toast or project.
+    fn logic_session_events(&mut self, now: f64) {
         for ev in self.session.drain_events() {
             match ev {
                 filmcraft_engine::Event::OpenSequence(_) => {
@@ -2417,6 +2430,10 @@ impl FilmcraftApp {
                 filmcraft_engine::Event::ProjectChanged { .. } => {}
             }
         }
+    }
+
+    /// Drain native menu/control command ids, preserving the control-only Quit exception.
+    fn logic_command_inbox(&mut self, ctx: &egui::Context) {
         if let Some(rx) = self.command_inbox.take() {
             while let Ok(id) = rx.try_recv() {
                 // control-only mode ignores native menu commands, but Quit stays available (#1943)
@@ -2429,6 +2446,20 @@ impl FilmcraftApp {
             }
             self.command_inbox = Some(rx);
         }
+    }
+
+    pub fn logic_inner(&mut self, ctx: &egui::Context) {
+        // Remember the pass's clock before anything reads `now()`. A hidden logic-only tick keeps
+        // the last UI time (which is stale there), so `now()` never runs behind the host clock.
+        self.ui_clock = self.ui_clock.max(ctx.input(|i| i.time));
+        // a native file dialog's answer first, so the panels draw what it chose (#260)
+        self.poll_native_dialog(ctx);
+        self.logic_theme(ctx);
+        let now = self.logic_clock(ctx);
+        self.logic_control(ctx);
+        self.logic_background(ctx, now);
+        self.logic_session_events(now);
+        self.logic_command_inbox(ctx);
         self.advance_playback(ctx);
         self.advance_source_playback(ctx);
         self.poll_jobs(ctx);

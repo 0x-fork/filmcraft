@@ -11,10 +11,11 @@
 //! is still settling therefore reaches its timeout. That fork gap is recorded as a prerequisite;
 //! this module does not claim a hidden web capture works.
 
+use std::sync::Arc;
 use std::sync::mpsc::Sender;
 
-use craft_ui::capture::CaptureSlot;
-use egui::ViewportCommand;
+use craft_ui::capture::{CaptureError, CaptureSlot};
+use egui::{ColorImage, ViewportCommand};
 use serde_json::{Value, json};
 use web_time::{Duration, Instant};
 
@@ -434,6 +435,77 @@ fn retry_geometry(app: &mut FilmcraftApp, ctx: &egui::Context, index: usize) -> 
     Ok(())
 }
 
+/// Whether an unissued request has waited for enough accepted passes, including the bounded
+/// maximum when the monitor is still showing an inexact frame or the timeline is animating.
+fn shot_is_settled(now: Instant, monitor_inexact: bool, timeline_still: u32, shot: &Shot) -> bool {
+    if now < shot.ready_at || shot.frames < SETTLE_PASSES {
+        return false;
+    }
+    !((monitor_inexact || timeline_still < 2) && now < shot.ready_at + SETTLE_MAX)
+}
+
+/// The result of trying to issue one settled request. Every variant keeps the original admission
+/// order: identity failures reject, geometry changes retry, a missing crop target waits a bounded
+/// number of passes, and everything else issues in the current accepted UI pass.
+enum IssueOutcome {
+    Identity(String),
+    GeometryRetry,
+    CropDeferred,
+    Failed(String),
+    Issued,
+}
+
+fn try_issue_shot(app: &mut FilmcraftApp, ctx: &egui::Context, index: usize) -> IssueOutcome {
+    let shot = &app.shots.requests[index];
+    if let Some(reason) = identity_reason(app, ctx, shot) {
+        return IssueOutcome::Identity(reason.to_string());
+    }
+    if geometry_reason(app, shot).is_some() {
+        return IssueOutcome::GeometryRetry;
+    }
+    let crop_result = match shot.crop_target.as_ref() {
+        Some(target) => target.resolve(&app.auto).map(Some),
+        None => Ok(None),
+    };
+    let resolved_crop = match crop_result {
+        Ok(crop) => crop,
+        Err(message) => {
+            let shot = &mut app.shots.requests[index];
+            if shot.crop_misses < CROP_SETTLE_PASSES {
+                // The panel may be shown by a request processed just before this admission;
+                // let the next accepted pass draw it before giving up.
+                shot.crop_misses = shot.crop_misses.saturating_add(1);
+                return IssueOutcome::CropDeferred;
+            }
+            return IssueOutcome::Failed(message);
+        }
+    };
+    let shot = &mut app.shots.requests[index];
+    let Some(callback) = shot.callback.take() else {
+        return IssueOutcome::Failed("screenshot failed: the capture callback was already consumed".into());
+    };
+    shot.crop = resolved_crop;
+    ctx.send_viewport_cmd_to(ctx.viewport_id(), ViewportCommand::Screenshot(callback));
+    shot.issued = true;
+    IssueOutcome::Issued
+}
+
+/// Reject failed requests from the highest index down, so an earlier removal cannot shift a later
+/// index and remove the wrong shot.
+fn reject_failures(app: &mut FilmcraftApp, mut failures: Vec<(usize, String)>) {
+    failures.sort_unstable_by_key(|(i, _)| std::cmp::Reverse(*i));
+    for (i, message) in failures {
+        if i >= app.shots.requests.len() {
+            continue;
+        }
+        let shot = app.shots.requests.remove(i);
+        if let Some(slot) = shot.slot {
+            slot.cancel();
+        }
+        reject(shot.reply, shot.token, message);
+    }
+}
+
 /// Issue settled requests. Called from every real `App::ui` pass (never from a hidden
 /// `run_logic` tick), including the accepted final pass of a multipass layout. `monitor_inexact`
 /// describes the pass that just drew the monitor, so consume it here: it must not stay sticky and
@@ -452,73 +524,100 @@ pub(crate) fn issue(app: &mut FilmcraftApp, ctx: &egui::Context) {
         }
         app.shots.requests[i].frames = app.shots.requests[i].frames.saturating_add(1);
         let shot = &app.shots.requests[i];
-        if now < shot.ready_at || shot.frames < SETTLE_PASSES {
+        if !shot_is_settled(now, monitor_inexact, app.timeline_still, shot) {
             continue;
         }
-        // After a seek the monitor can show the nearest cached picture until the exact frame is
-        // decoded, and the Timeline can still be animating. Capture once those have settled, or
-        // after the same bounded maximum the old `Ui` settle path used.
-        if (monitor_inexact || app.timeline_still < 2) && now < shot.ready_at + SETTLE_MAX {
-            continue;
+        match try_issue_shot(app, ctx, i) {
+            IssueOutcome::Identity(reason) => failures.push((i, reason)),
+            IssueOutcome::GeometryRetry => retries.push(i),
+            IssueOutcome::CropDeferred => ctx.request_repaint(),
+            IssueOutcome::Failed(message) => failures.push((i, message)),
+            IssueOutcome::Issued => {}
         }
-        if let Some(reason) = identity_reason(app, ctx, shot) {
-            failures.push((i, reason.to_string()));
-            continue;
-        }
-        if geometry_reason(app, shot).is_some() {
-            retries.push(i);
-            continue;
-        }
-        let crop_result = match app.shots.requests[i].crop_target.as_ref() {
-            Some(target) => target.resolve(&app.auto).map(Some),
-            None => Ok(None),
-        };
-        let resolved_crop = match crop_result {
-            Ok(crop) => crop,
-            Err(message) => {
-                let shot = &mut app.shots.requests[i];
-                if shot.crop_misses < CROP_SETTLE_PASSES {
-                    // The panel may be shown by a request processed just before this admission;
-                    // let the next accepted pass draw it before giving up.
-                    shot.crop_misses = shot.crop_misses.saturating_add(1);
-                    ctx.request_repaint();
-                    continue;
-                }
-                failures.push((i, message));
-                continue;
-            }
-        };
-        let shot = &mut app.shots.requests[i];
-        let Some(callback) = shot.callback.take() else {
-            failures.push((i, "screenshot failed: the capture callback was already consumed".into()));
-            continue;
-        };
-        shot.crop = resolved_crop;
-        ctx.send_viewport_cmd_to(ctx.viewport_id(), ViewportCommand::Screenshot(callback));
-        shot.issued = true;
     }
     for i in retries.into_iter().rev() {
         if let Err(message) = retry_geometry(app, ctx, i) {
             failures.push((i, message));
         }
     }
-    // Failures arrive from the ascending admission scan and the reverse geometry-retry scan, so
-    // sort them by index and remove from the highest index down: an earlier removal must not shift
-    // a later index (which could remove the wrong shot or panic).
-    failures.sort_unstable_by_key(|(i, _)| std::cmp::Reverse(*i));
-    for (i, message) in failures {
-        if i >= app.shots.requests.len() {
-            continue;
-        }
-        let shot = app.shots.requests.remove(i);
-        if let Some(slot) = shot.slot {
-            slot.cancel();
-        }
-        reject(shot.reply, shot.token, message);
-    }
+    reject_failures(app, failures);
     if !app.shots.is_empty() {
         ctx.request_repaint_after(REPAINT_INTERVAL);
     }
+}
+
+/// The next step for one drain scan position. `Keep` advances to the next request; every removal
+/// variant leaves the index unchanged so it sees the shot shifted into place.
+enum DrainStep {
+    Keep,
+    Timeout,
+    Identity(String),
+    Geometry,
+    Complete(Result<Arc<ColorImage>, CaptureError>),
+}
+
+fn drain_step(app: &FilmcraftApp, ctx: &egui::Context, index: usize, now: Instant) -> DrainStep {
+    let shot = &app.shots.requests[index];
+    if now >= shot.deadline {
+        return DrainStep::Timeout;
+    }
+    if let Some(reason) = identity_reason(app, ctx, shot) {
+        return DrainStep::Identity(reason.to_string());
+    }
+    if geometry_reason(app, shot).is_some() {
+        if !shot.issued {
+            // The next accepted UI pass re-creates the slot against the fresh geometry.
+            return DrainStep::Keep;
+        }
+        // Geometry changed while the callback was already issued: reject stale pixels rather
+        // than pairing them with the new surface.
+        return DrainStep::Geometry;
+    }
+    if !shot.issued {
+        return DrainStep::Keep;
+    }
+    let Some(result) = shot.slot.as_ref().and_then(CaptureSlot::take) else {
+        return DrainStep::Keep;
+    };
+    DrainStep::Complete(result)
+}
+
+fn remove_and_reject(app: &mut FilmcraftApp, index: usize, message: impl std::fmt::Display) {
+    let shot = app.shots.requests.remove(index);
+    if let Some(slot) = shot.slot {
+        slot.cancel();
+    }
+    reject(shot.reply, shot.token, message);
+}
+
+/// Build the saved-image reply, using the rendered scale of the delivered texture for crops.
+fn image_reply(shot: &Shot, image: &ColorImage) -> Value {
+    if image.size != shot.expected {
+        return error_reply(
+            shot.token,
+            format!(
+                "screenshot is {}×{} pixels, expected {}×{}: the window changed size while it was captured",
+                image.size[0], image.size[1], shot.expected[0], shot.expected[1]
+            ),
+        );
+    }
+    let captured_ppp = shot.geometry.surface.captured_pixels_per_point();
+    let mut reply = crate::control::save_screenshot_with_ppp(image, shot.path.as_deref(), shot.crop, captured_ppp);
+    if let Some(object) = reply.as_object_mut() {
+        object.insert("request".into(), json!(shot.token));
+    }
+    reply
+}
+
+fn complete_shot(mut shot: Shot, result: Result<Arc<ColorImage>, CaptureError>) {
+    if let Some(slot) = shot.slot.take() {
+        slot.cancel();
+    }
+    let reply = match result {
+        Ok(image) => image_reply(&shot, &image),
+        Err(error) => error_reply(shot.token, error),
+    };
+    let _ = shot.reply.send(reply);
 }
 
 /// Drain completed slots and expire timed-out requests. Call from every logic callback (including
@@ -527,71 +626,14 @@ pub(crate) fn drain(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut i = 0;
     while i < app.shots.requests.len() {
         let now = Instant::now();
-        if now >= app.shots.requests[i].deadline {
-            let shot = app.shots.requests.remove(i);
-            if let Some(slot) = shot.slot {
-                slot.cancel();
-            }
-            reject(shot.reply, shot.token, "no frame was presented before the screenshot timeout");
-            continue;
-        }
-        if let Some(reason) = identity_reason(app, ctx, &app.shots.requests[i]) {
-            let shot = app.shots.requests.remove(i);
-            if let Some(slot) = shot.slot {
-                slot.cancel();
-            }
-            reject(shot.reply, shot.token, format!("screenshot failed: {reason}"));
-            continue;
-        }
-        if geometry_reason(app, &app.shots.requests[i]).is_some() {
-            if !app.shots.requests[i].issued {
-                // The next accepted UI pass re-creates the slot against the fresh geometry.
-                i += 1;
-                continue;
-            }
-            // Geometry changed while the callback was already issued: reject stale pixels rather
-            // than pairing them with the new surface.
-            let shot = app.shots.requests.remove(i);
-            if let Some(slot) = shot.slot {
-                slot.cancel();
-            }
-            reject(shot.reply, shot.token, "screenshot failed: the window geometry changed while the capture was in flight");
-            continue;
-        }
-        if !app.shots.requests[i].issued {
-            i += 1;
-            continue;
-        }
-        let Some(result) = app.shots.requests[i].slot.as_ref().and_then(CaptureSlot::take) else {
-            i += 1;
-            continue;
-        };
-        let shot = app.shots.requests.remove(i);
-        if let Some(slot) = shot.slot {
-            slot.cancel();
-        }
-        match result {
-            Ok(image) => {
-                let reply = if image.size != shot.expected {
-                    error_reply(
-                        shot.token,
-                        format!(
-                            "screenshot is {}×{} pixels, expected {}×{}: the window changed size while it was captured",
-                            image.size[0], image.size[1], shot.expected[0], shot.expected[1]
-                        ),
-                    )
-                } else {
-                    let captured_ppp = shot.geometry.surface.captured_pixels_per_point();
-                    let mut reply = crate::control::save_screenshot_with_ppp(&image, shot.path.as_deref(), shot.crop, captured_ppp);
-                    if let Some(object) = reply.as_object_mut() {
-                        object.insert("request".into(), json!(shot.token));
-                    }
-                    reply
-                };
-                let _ = shot.reply.send(reply);
-            }
-            Err(error) => {
-                let _ = shot.reply.send(error_reply(shot.token, error));
+        match drain_step(app, ctx, i, now) {
+            DrainStep::Keep => i += 1,
+            DrainStep::Timeout => remove_and_reject(app, i, "no frame was presented before the screenshot timeout"),
+            DrainStep::Identity(reason) => remove_and_reject(app, i, format!("screenshot failed: {reason}")),
+            DrainStep::Geometry => remove_and_reject(app, i, "screenshot failed: the window geometry changed while the capture was in flight"),
+            DrainStep::Complete(result) => {
+                let shot = app.shots.requests.remove(i);
+                complete_shot(shot, result);
             }
         }
     }

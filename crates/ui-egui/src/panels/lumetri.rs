@@ -17,6 +17,7 @@ use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
 use crate::native_dialogs::FileDialog;
 use crate::theme::Tokens;
+use crate::widgets::HotNumberOptions;
 
 type Actions = Vec<Value>;
 
@@ -448,11 +449,7 @@ fn slider(
         label,
         egui::Id::unique(("lval", clip.0, id)),
         v,
-        (soft_max - soft_min) / 300.0,
-        (min, max),
-        decimals as usize,
-        "",
-        t,
+        HotNumberOptions::new((soft_max - soft_min) / 300.0, (min, max), decimals as usize, "", t),
     );
     if let Some(nv) = out.or(nv) {
         actions.push(json!({"clip": clip.0, "effect": idx, "param": id, "value": (nv * 10f64.powi(decimals as i32)).round() / 10f64.powi(decimals as i32)}));

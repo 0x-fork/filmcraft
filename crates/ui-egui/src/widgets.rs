@@ -23,55 +23,80 @@ pub fn accessible_name(response: Response, name: impl Into<String>) -> Response 
     response
 }
 
+/// Numeric formatting and theme context for a [`hot_number`] field.
+///
+/// Grouping the related knobs keeps the widget's call sites readable and below the argument-count
+/// limit; the fields are exactly the values the hot-number editor and drag handling need.
+pub struct HotNumberOptions<'a> {
+    /// Value change per dragged point at the normal modifier setting.
+    pub speed: f64,
+    /// Inclusive value bounds used when committing a drag or a typed calculation.
+    pub range: (f64, f64),
+    /// Digits after the decimal point in the displayed value.
+    pub decimals: usize,
+    /// Unit text drawn after the value and stripped from typed expressions.
+    pub suffix: &'a str,
+    /// Theme tokens for the hot-text colours.
+    pub tokens: &'a Tokens,
+}
+
+impl<'a> HotNumberOptions<'a> {
+    pub const fn new(speed: f64, range: (f64, f64), decimals: usize, suffix: &'a str, tokens: &'a Tokens) -> Self {
+        Self { speed, range, decimals, suffix, tokens }
+    }
+}
+
 /// Premiere "hot text": a blue number you drag horizontally to scrub, click to type a number or a
 /// calculation ([`crate::calc`]). `label` is the property's accessible name (for example
 /// "Position X"), used when the field switches to a text editor so screen readers can tell the
 /// value fields apart.
 /// Returns (response, Some(new value) when changed).
-pub fn hot_number(
-    ui: &mut Ui,
-    label: &str,
-    id: egui::Id,
-    value: f64,
-    speed: f64,
-    range: (f64, f64),
-    decimals: usize,
-    suffix: &str,
-    t: &Tokens,
-) -> (Response, Option<f64>) {
+pub fn hot_number(ui: &mut Ui, label: &str, id: egui::Id, value: f64, options: HotNumberOptions<'_>) -> (Response, Option<f64>) {
+    let editing_id = id.with("editing");
+    let mut editing: Option<String> = ui.data(|d| d.get_temp(editing_id));
+    if let Some(buf) = editing.as_mut() {
+        return hot_number_editor(ui, label, id, value, options.range, options.suffix, buf);
+    }
+    hot_number_display(ui, id, value, options)
+}
+
+/// The single-line text editor shown after a click on a hot number.
+fn hot_number_editor(ui: &mut Ui, label: &str, id: egui::Id, value: f64, range: (f64, f64), suffix: &str, buf: &mut String) -> (Response, Option<f64>) {
     let editing_id = id.with("editing");
     let edit_id = id.with("edit");
     let select_all_id = id.with("select-all");
-    let mut editing: Option<String> = ui.data(|d| d.get_temp(editing_id));
-    if let Some(buf) = editing.as_mut() {
-        let r = accessible_name(ui.add(egui::TextEdit::singleline(buf).id(edit_id).desired_width(56.0).font(Tokens::ui(12.0))), label);
-        let mut out = None;
-        if r.lost_focus() {
-            // the field's own unit can be typed anywhere; calc ignores the common ones
-            let typed = if suffix.trim().is_empty() { buf.clone() } else { buf.replace(suffix.trim(), "") };
-            if let Some(v) = crate::calc::eval(&typed, value) {
-                out = Some(v.clamp(range.0, range.1));
-            }
-            ui.data_mut(|d| d.remove::<String>(editing_id));
-        } else {
-            let b = buf.clone();
-            ui.data_mut(|d| d.insert_temp(editing_id, b));
-            // select the whole value once the field has focus (egui collapses a selection to a caret
-            // in a field that does not have it yet), so typing replaces it as in Premiere
-            let selected_now = r.has_focus() && ui.data_mut(|d| d.remove_temp::<bool>(select_all_id)).is_some();
-            if selected_now {
-                let mut st = egui::text_edit::TextEditState::load(ui.ctx(), edit_id).unwrap_or_default();
-                st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(buf.chars().count()))));
-                st.store(ui.ctx(), edit_id);
-            }
-            // the focus and the selection show on the next frame, which nothing else would trigger
-            if !r.has_focus() || selected_now {
-                ui.ctx().request_repaint();
-            }
-            r.request_focus();
+    let r = accessible_name(ui.add(egui::TextEdit::singleline(buf).id(edit_id).desired_width(56.0).font(Tokens::ui(12.0))), label);
+    let mut out = None;
+    if r.lost_focus() {
+        // the field's own unit can be typed anywhere; calc ignores the common ones
+        let typed = if suffix.trim().is_empty() { buf.clone() } else { buf.replace(suffix.trim(), "") };
+        if let Some(v) = crate::calc::eval(&typed, value) {
+            out = Some(v.clamp(range.0, range.1));
         }
-        return (r, out);
+        ui.data_mut(|d| d.remove::<String>(editing_id));
+    } else {
+        let b = buf.clone();
+        ui.data_mut(|d| d.insert_temp(editing_id, b));
+        // select the whole value once the field has focus (egui collapses a selection to a caret
+        // in a field that does not have it yet), so typing replaces it as in Premiere
+        let selected_now = r.has_focus() && ui.data_mut(|d| d.remove_temp::<bool>(select_all_id)).is_some();
+        if selected_now {
+            let mut st = egui::text_edit::TextEditState::load(ui.ctx(), edit_id).unwrap_or_default();
+            st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(buf.chars().count()))));
+            st.store(ui.ctx(), edit_id);
+        }
+        // the focus and the selection show on the next frame, which nothing else would trigger
+        if !r.has_focus() || selected_now {
+            ui.ctx().request_repaint();
+        }
+        r.request_focus();
     }
+    (r, out)
+}
+
+/// The painted, draggable value shown while the field is not in text-edit mode.
+fn hot_number_display(ui: &mut Ui, id: egui::Id, value: f64, options: HotNumberOptions<'_>) -> (Response, Option<f64>) {
+    let HotNumberOptions { speed, range, decimals, suffix, tokens: t } = options;
     let text = format!("{value:.decimals$}{suffix}");
     let galley = ui.painter().layout_no_wrap(text, Tokens::ui(12.0), t.hot_text);
     let (rect, resp) = ui.allocate_exact_size(galley.size() + vec2(4.0, 4.0), Sense::click_and_drag());
@@ -85,15 +110,7 @@ pub fn hot_number(
     let mut out = None;
     if resp.dragged() {
         let dx = resp.drag_delta().x as f64;
-        let mult = ui.input(|i| {
-            if i.modifiers.shift {
-                10.0
-            } else if i.modifiers.command {
-                0.1
-            } else {
-                1.0
-            }
-        });
+        let mult = hot_number_drag_multiplier(ui);
         let nv = (value + dx * speed * mult).clamp(range.0, range.1);
         if (nv - value).abs() > f64::EPSILON {
             out = Some(nv);
@@ -101,12 +118,24 @@ pub fn hot_number(
     }
     if resp.clicked() {
         ui.data_mut(|d| {
-            d.insert_temp(editing_id, format!("{value:.decimals$}"));
-            d.insert_temp(select_all_id, true);
+            d.insert_temp(id.with("editing"), format!("{value:.decimals$}"));
+            d.insert_temp(id.with("select-all"), true);
         });
         ui.ctx().request_repaint();
     }
     (resp, out)
+}
+
+fn hot_number_drag_multiplier(ui: &Ui) -> f64 {
+    ui.input(|i| {
+        if i.modifiers.shift {
+            10.0
+        } else if i.modifiers.command {
+            0.1
+        } else {
+            1.0
+        }
+    })
 }
 
 /// A large blue timecode readout (monitors/timeline) that moves its playhead: drag horizontally to
@@ -397,7 +426,7 @@ mod tests {
         let input = egui::RawInput { events, ..Default::default() };
         // no renderer takes the font atlas upload here; drop it explicitly (epaint panics otherwise)
         ctx.run_ui(input, |ui| {
-            hot_number(ui, "Value", id, 123.5, 1.0, (0.0, 1000.0), 1, "", &t);
+            hot_number(ui, "Value", id, 123.5, HotNumberOptions::new(1.0, (0.0, 1000.0), 1, "", &t));
         })
         .textures_delta
         .clear();
@@ -417,7 +446,7 @@ mod tests {
                     d.insert_temp(id.with("editing"), "12.5".to_string());
                     d.insert_temp(id.with("select-all"), false);
                 });
-                hot_number(ui, "Position X", id, 12.5, 1.0, (-1000.0, 1000.0), 1, "", &t);
+                hot_number(ui, "Position X", id, 12.5, HotNumberOptions::new(1.0, (-1000.0, 1000.0), 1, "", &t));
             },
             (),
         );

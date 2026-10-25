@@ -36,6 +36,7 @@ use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
 use crate::state::{GfxEdit, TextPropsDialog, Tool};
 use crate::theme::Tokens;
+use crate::widgets::HotNumberOptions;
 
 /// A graphic layer visible at the playhead, with its layer→screen transform.
 pub struct LayerView {
@@ -1611,12 +1612,364 @@ fn ime_event_is_stale(app: &FilmcraftApp, target: ImeTarget) -> bool {
     }
 }
 
+/// Whether an event was fully handled or must skip the per-event IME destination update, which
+/// mirrors the original loop's `continue` paths.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EventFlow {
+    Applied,
+    Skip,
+}
+
+/// Mutable state for one batch of text-editor events: the committed text, caret/selection, the IME
+/// receipt chain, and whether the batch contains ordinary application-origin edits.
+struct TextEditState {
+    ed: GfxEdit,
+    text: String,
+    changed: bool,
+    stop: bool,
+    application_mutation: bool,
+    custom_mutations: bool,
+    ime_before: Option<(usize, usize)>,
+    ime_after: Vec<ImeMutationStamp>,
+}
+
+impl TextEditState {
+    fn selection(&self) -> (usize, usize) {
+        (self.ed.caret.min(self.ed.anchor), self.ed.caret.max(self.ed.anchor))
+    }
+
+    fn delete_selection(&mut self) -> bool {
+        let (a, b) = self.selection();
+        if a == b {
+            return false;
+        }
+        self.text.replace_range(a..b, "");
+        self.ed.caret = a;
+        self.ed.anchor = a;
+        true
+    }
+
+    /// Record the first pre-mutation caret/anchor and the post-mutation stamp. The caller records
+    /// only after an accepted IME mutation, exactly as the original inline arms did.
+    fn record_ime_change(&mut self, before: (usize, usize)) {
+        self.ime_before.get_or_insert(before);
+        self.ime_after.push(ime_stamp(&self.text, self.ed.caret, self.ed.anchor));
+        self.changed = true;
+    }
+}
+
+/// The per-event prologue: sync the live destination, consume IME-reset completions, and reject
+/// events while a reset blocks IME input. `None` is the original loop's `continue`.
+fn begin_text_event(app: &mut FilmcraftApp, ui: &egui::Ui, state: &TextEditState, target: ImeTarget, event: &egui::Event) -> Option<(bool, bool)> {
+    let destination = local_reset_destination(app, &state.ed, &state.text, target);
+    if state.custom_mutations {
+        app.sync_live_ime_destination(ui.ctx(), destination);
+    }
+    if let egui::Event::ImeResetCompleted { request_id } = event {
+        if state.custom_mutations && app.ime_reset.complete(ui.ctx(), *request_id, destination) && app.ime_composition_viewport == Some(ui.ctx().viewport_id())
+        {
+            app.ime_composition = None;
+            app.ime_composition_viewport = None;
+        }
+        return None;
+    }
+    if !state.custom_mutations || (app.ime_reset.blocked(ui.ctx().viewport_id()) && matches!(event, egui::Event::Ime(_))) {
+        return None;
+    }
+    let from_ime = matches!(event, egui::Event::Ime(_));
+    let terminal = matches!(event, egui::Event::Ime(egui::ImeEvent::Commit(_)));
+    Some((from_ime, terminal))
+}
+
+/// The per-event epilogue: remember or terminal-acknowledge an IME event's destination, or keep
+/// the live destination in sync for ordinary application edits.
+fn finish_text_event(app: &mut FilmcraftApp, ui: &egui::Ui, state: &TextEditState, target: ImeTarget, from_ime: bool, terminal: bool) {
+    let current = local_reset_destination(app, &state.ed, &state.text, target);
+    if from_ime {
+        if terminal {
+            app.ime_reset.terminal(ui.ctx().viewport_id());
+        } else {
+            app.ime_reset.remember(ui.ctx().viewport_id(), current);
+        }
+    } else if state.custom_mutations {
+        app.sync_live_ime_destination(ui.ctx(), current);
+    }
+}
+
+fn apply_preedit(app: &mut FilmcraftApp, ui: &egui::Ui, target: ImeTarget, text: &str) {
+    app.ime_composition_viewport = Some(ui.ctx().viewport_id());
+    if text.is_empty() {
+        app.ime_composition = Some(crate::ImeComposition::TerminalPending(target));
+    } else {
+        app.ime_composition = Some(crate::ImeComposition::Active(target));
+    }
+}
+
+fn apply_delete_surrounding_bytes(app: &FilmcraftApp, state: &mut TextEditState, target: ImeTarget, before_bytes: usize, after_bytes: usize) -> EventFlow {
+    if ime_event_is_stale(app, target) {
+        return EventFlow::Skip;
+    }
+    let (a, b) = state.selection();
+    let (before, after) = surrounding_byte_deletion_ranges(&state.text, a, b, before_bytes, after_bytes);
+    if !before.is_empty() || !after.is_empty() {
+        let previous = (state.ed.caret, state.ed.anchor);
+        apply_surrounding_deletion(&mut state.text, &mut state.ed, before, after);
+        state.record_ime_change(previous);
+    }
+    EventFlow::Applied
+}
+
+fn apply_delete_surrounding_chars(app: &FilmcraftApp, state: &mut TextEditState, target: ImeTarget, before_chars: usize, after_chars: usize) -> EventFlow {
+    if ime_event_is_stale(app, target) {
+        return EventFlow::Skip;
+    }
+    let (a, b) = state.selection();
+    let before = prev_n_chars(&state.text, a, before_chars)..a;
+    let after = b..next_n_chars(&state.text, b, after_chars);
+    if !before.is_empty() || !after.is_empty() {
+        let previous = (state.ed.caret, state.ed.anchor);
+        apply_surrounding_deletion(&mut state.text, &mut state.ed, before, after);
+        state.record_ime_change(previous);
+    }
+    EventFlow::Applied
+}
+
+fn apply_text_input(state: &mut TextEditState, input: &str) -> EventFlow {
+    let s: String = input.chars().filter(|c| !c.is_control() || *c == '\n').collect();
+    if s.is_empty() {
+        return EventFlow::Skip;
+    }
+    state.delete_selection();
+    let at = state.ed.caret;
+    state.text.insert_str(at, &s);
+    state.ed.caret += s.len();
+    state.ed.anchor = state.ed.caret;
+    state.application_mutation = true;
+    state.changed = true;
+    EventFlow::Applied
+}
+
+fn apply_ime_commit(app: &mut FilmcraftApp, state: &mut TextEditState, target: ImeTarget, input: &str) -> EventFlow {
+    if ime_event_is_stale(app, target) {
+        return EventFlow::Skip;
+    }
+    app.ime_composition = None;
+    app.ime_composition_viewport = None;
+    let s: String = input.chars().filter(|c| !c.is_control() || *c == '\n').collect();
+    let previous = (state.ed.caret, state.ed.anchor);
+    if s.is_empty() {
+        // A commit replaces the selection even when the input method produced no text
+        // (for example DeleteSurroundingBytes followed by an empty commit). An empty
+        // commit with no selection stays a no-op.
+        if state.delete_selection() {
+            state.record_ime_change(previous);
+        }
+    } else {
+        state.delete_selection();
+        let at = state.ed.caret;
+        state.text.insert_str(at, &s);
+        state.ed.caret += s.len();
+        state.ed.anchor = state.ed.caret;
+        state.record_ime_change(previous);
+    }
+    EventFlow::Applied
+}
+
+fn apply_copy_cut(ui: &egui::Ui, state: &mut TextEditState, cut: bool) -> EventFlow {
+    let (a, b) = state.selection();
+    if a < b {
+        ui.ctx().copy_text(state.text[a..b].to_string());
+        if cut && state.delete_selection() {
+            state.application_mutation = true;
+            state.changed = true;
+        }
+    }
+    EventFlow::Applied
+}
+
+fn left_target(state: &TextEditState, layout: &filmcraft_text::Layout, shift: bool, command: bool, alt: bool) -> usize {
+    let (a, _) = state.selection();
+    if !shift && state.ed.caret != state.ed.anchor {
+        a
+    } else if command {
+        layout.lines[layout.caret(state.ed.caret).2].range.start
+    } else if alt {
+        word_left(&state.text, state.ed.caret)
+    } else {
+        prev_boundary(&state.text, state.ed.caret)
+    }
+}
+
+fn right_target(state: &TextEditState, layout: &filmcraft_text::Layout, shift: bool, command: bool, alt: bool) -> usize {
+    let (_, b) = state.selection();
+    if !shift && state.ed.caret != state.ed.anchor {
+        b
+    } else if command {
+        layout.lines[layout.caret(state.ed.caret).2].range.end
+    } else if alt {
+        word_right(&state.text, state.ed.caret)
+    } else {
+        next_boundary(&state.text, state.ed.caret)
+    }
+}
+
+fn vertical_target(state: &TextEditState, layout: &filmcraft_text::Layout, up: bool) -> usize {
+    let (x, _, line) = layout.caret(state.ed.caret);
+    let target = if up { line.checked_sub(1) } else { Some(line + 1).filter(|next| *next < layout.lines.len()) };
+    match target {
+        Some(next) => layout.hit(x, layout.lines[next].baseline),
+        None if up => 0,
+        None => state.text.len(),
+    }
+}
+
+fn apply_moved_caret(app: &mut FilmcraftApp, state: &mut TextEditState, moved: Option<usize>, shift: bool) {
+    if let Some(m) = moved {
+        let previous_selection = (state.ed.caret, state.ed.anchor);
+        // `m` comes from the layout of the text at the start of this batch, but an
+        // earlier Text/Paste/IME event may already have changed `text`; clamp to a
+        // UTF-8 boundary in the current text before a later event slices or inserts.
+        state.ed.caret = char_boundary_floor(&state.text, m);
+        if !shift {
+            state.ed.anchor = state.ed.caret;
+        }
+        if previous_selection != (state.ed.caret, state.ed.anchor) {
+            app.invalidate_ime_composition();
+        }
+    }
+}
+
+fn apply_key_event(
+    app: &mut FilmcraftApp,
+    ui: &egui::Ui,
+    state: &mut TextEditState,
+    layout: &filmcraft_text::Layout,
+    key: egui::Key,
+    modifiers: egui::Modifiers,
+) -> EventFlow {
+    let shift = modifiers.shift;
+    let mut moved = None;
+    match key {
+        egui::Key::Escape => {
+            // Escape cancels the edit now: a commit later in the same raw batch must
+            // not still be inserted after the user cancelled.
+            state.stop = true;
+            state.custom_mutations = false;
+            app.suspend_ime_input(ui.ctx());
+            return EventFlow::Skip;
+        }
+        egui::Key::Enter => {
+            state.delete_selection();
+            let at = state.ed.caret;
+            state.text.insert(at, '\n');
+            state.ed.caret += 1;
+            state.ed.anchor = state.ed.caret;
+            state.application_mutation = true;
+            state.changed = true;
+        }
+        egui::Key::Backspace => {
+            let mut did = state.delete_selection();
+            if !did && state.ed.caret > 0 {
+                let p = if modifiers.alt || modifiers.command { word_left(&state.text, state.ed.caret) } else { prev_boundary(&state.text, state.ed.caret) };
+                let end = state.ed.caret;
+                state.text.replace_range(p..end, "");
+                state.ed.caret = p;
+                state.ed.anchor = p;
+                did = true;
+            }
+            if did {
+                state.application_mutation = true;
+                state.changed = true;
+            }
+        }
+        egui::Key::Delete => {
+            let mut did = state.delete_selection();
+            if !did && state.ed.caret < state.text.len() {
+                let n = next_boundary(&state.text, state.ed.caret);
+                let at = state.ed.caret;
+                state.text.replace_range(at..n, "");
+                did = true;
+            }
+            if did {
+                state.application_mutation = true;
+                state.changed = true;
+            }
+        }
+        egui::Key::A if modifiers.command => {
+            let moved = (state.ed.anchor, state.ed.caret) != (0, state.text.len());
+            state.ed.anchor = 0;
+            state.ed.caret = state.text.len();
+            if moved {
+                app.invalidate_ime_composition();
+            }
+        }
+        egui::Key::ArrowLeft => {
+            moved = Some(left_target(state, layout, shift, modifiers.command, modifiers.alt));
+        }
+        egui::Key::ArrowRight => {
+            moved = Some(right_target(state, layout, shift, modifiers.command, modifiers.alt));
+        }
+        egui::Key::ArrowUp | egui::Key::ArrowDown => {
+            moved = Some(vertical_target(state, layout, key == egui::Key::ArrowUp));
+        }
+        egui::Key::Home => moved = Some(layout.lines[layout.caret(state.ed.caret).2].range.start),
+        egui::Key::End => moved = Some(layout.lines[layout.caret(state.ed.caret).2].range.end),
+        _ => {}
+    }
+    apply_moved_caret(app, state, moved, shift);
+    EventFlow::Applied
+}
+
+/// Apply one already-admitted event. The match arms keep the original order and short-circuits;
+/// `Skip` reproduces the inline `continue` for stale or empty IME/text events.
+fn apply_text_event(
+    app: &mut FilmcraftApp,
+    ui: &egui::Ui,
+    state: &mut TextEditState,
+    target: ImeTarget,
+    layout: &filmcraft_text::Layout,
+    event: egui::Event,
+) -> EventFlow {
+    let is_cut = matches!(&event, egui::Event::Cut);
+    match event {
+        egui::Event::Ime(egui::ImeEvent::Preedit { text, .. }) => {
+            apply_preedit(app, ui, target, &text);
+            EventFlow::Applied
+        }
+        // text-input-v3/Wayland delete-surrounding arrives in UTF-8 bytes. Only whole
+        // characters fully inside the reported range are deleted: a byte count that ends
+        // inside a character leaves that character (the fork's contract), so a combining
+        // accent or the letter next to an emoji is preserved.
+        egui::Event::Ime(egui::ImeEvent::DeleteSurroundingBytes { before_bytes, after_bytes }) => {
+            apply_delete_surrounding_bytes(app, state, target, before_bytes, after_bytes)
+        }
+        egui::Event::Ime(egui::ImeEvent::DeleteSurrounding { before_chars, after_chars }) => {
+            apply_delete_surrounding_chars(app, state, target, before_chars, after_chars)
+        }
+        // ordinary typing and paste are application-origin, even in the same pass as an IME event
+        egui::Event::Text(s) | egui::Event::Paste(s) => apply_text_input(state, &s),
+        // an input method (Chinese, Japanese, Korean) hands over its finished text as a commit (#1083)
+        egui::Event::Ime(egui::ImeEvent::Commit(s)) => apply_ime_commit(app, state, target, &s),
+        egui::Event::Copy | egui::Event::Cut => apply_copy_cut(ui, state, is_cut),
+        egui::Event::Key { key, pressed: true, modifiers, .. } => apply_key_event(app, ui, state, layout, key, modifiers),
+        // A pointer press is handled later in this pass (caret placement, another layer, or
+        // ending the edit). Events after it in the same raw batch belong to the new target and
+        // must not be applied to the old one.
+        egui::Event::PointerButton { pressed: true, .. } => {
+            state.custom_mutations = false;
+            app.suspend_ime_input(ui.ctx());
+            EventFlow::Applied
+        }
+        _ => EventFlow::Applied,
+    }
+}
+
 /// Keyboard handling while a text layer is being edited.
 fn text_edit(
     app: &mut FilmcraftApp,
     ui: &mut egui::Ui,
     v: &LayerView,
-    mut ed: GfxEdit,
+    ed: GfxEdit,
     resp: &egui::Response,
     actions: &mut Vec<(String, Value)>,
     pending_ime: &mut Option<PendingImeEdit>,
@@ -1657,292 +2010,59 @@ fn text_edit(
         app.suspended_ime_controls(ui.ctx());
         return;
     };
-    let mut text = tp.text.clone();
+    let mut state = TextEditState {
+        ed,
+        text: tp.text.clone(),
+        changed: false,
+        stop: false,
+        application_mutation: false,
+        custom_mutations: true,
+        ime_before: None,
+        ime_after: Vec::new(),
+    };
     // `ui.set.gfxEdit` accepts arbitrary byte offsets. Clamp both ends to UTF-8 boundaries here,
     // before any slice/replace_range/insert_str, so hostile offsets can never panic the editor.
-    clamp_edit_offsets(&text, &mut ed);
+    clamp_edit_offsets(&state.text, &mut state.ed);
     let l = text_layout(tp);
     let events = ui.input(|i| i.events.clone());
     let sequence = app.session.state.active_sequence.map_or(0, |sequence| sequence.0);
-    let composition_target = graphics_ime_target(sequence, ed.clip, ed.layer, v.spec.uid, app.ime_replacement_epoch);
-    let mut changed = false;
-    let mut stop = false;
-    let mut application_mutation = false;
-    // A break becomes an ordered controls-only suffix, never a marker pre-scan.
-    let mut custom_mutations = true;
-    let mut ime_before: Option<(usize, usize)> = None;
-    let mut ime_after: Vec<ImeMutationStamp> = Vec::new();
-    let sel = |ed: &GfxEdit| (ed.caret.min(ed.anchor), ed.caret.max(ed.anchor));
-    let delete_sel = |text: &mut String, ed: &mut GfxEdit| -> bool {
-        let (a, b) = sel(ed);
-        if a == b {
-            return false;
-        }
-        text.replace_range(a..b, "");
-        ed.caret = a;
-        ed.anchor = a;
-        true
-    };
+    let composition_target = graphics_ime_target(sequence, state.ed.clip, state.ed.layer, v.spec.uid, app.ime_replacement_epoch);
     for ev in events {
-        let destination = local_reset_destination(app, &ed, &text, composition_target);
-        if custom_mutations {
-            app.sync_live_ime_destination(ui.ctx(), destination);
-        }
-        if let egui::Event::ImeResetCompleted { request_id } = ev {
-            if custom_mutations && app.ime_reset.complete(ui.ctx(), request_id, destination) && app.ime_composition_viewport == Some(ui.ctx().viewport_id()) {
-                app.ime_composition = None;
-                app.ime_composition_viewport = None;
-            }
+        let Some((from_ime, terminal)) = begin_text_event(app, ui, &state, composition_target, &ev) else {
+            continue;
+        };
+        if apply_text_event(app, ui, &mut state, composition_target, &l, ev) == EventFlow::Skip {
             continue;
         }
-        if !custom_mutations || (app.ime_reset.blocked(ui.ctx().viewport_id()) && matches!(&ev, egui::Event::Ime(_))) {
-            continue;
-        }
-        let from_ime = matches!(&ev, egui::Event::Ime(_));
-        let terminal = matches!(&ev, egui::Event::Ime(egui::ImeEvent::Commit(_)));
-        match ev {
-            egui::Event::Ime(egui::ImeEvent::Preedit { text, .. }) => {
-                app.ime_composition_viewport = Some(ui.ctx().viewport_id());
-                if text.is_empty() {
-                    app.ime_composition = Some(crate::ImeComposition::TerminalPending(composition_target));
-                } else {
-                    app.ime_composition = Some(crate::ImeComposition::Active(composition_target));
-                }
-            }
-            // text-input-v3/Wayland delete-surrounding arrives in UTF-8 bytes. Only whole
-            // characters fully inside the reported range are deleted: a byte count that ends
-            // inside a character leaves that character (the fork's contract), so a combining
-            // accent or the letter next to an emoji is preserved.
-            egui::Event::Ime(egui::ImeEvent::DeleteSurroundingBytes { before_bytes, after_bytes }) => {
-                if ime_event_is_stale(app, composition_target) {
-                    continue;
-                }
-                let (a, b) = sel(&ed);
-                let (before, after) = surrounding_byte_deletion_ranges(&text, a, b, before_bytes, after_bytes);
-                if !before.is_empty() || !after.is_empty() {
-                    let (before_caret, before_anchor) = (ed.caret, ed.anchor);
-                    apply_surrounding_deletion(&mut text, &mut ed, before, after);
-                    ime_before.get_or_insert((before_caret, before_anchor));
-                    ime_after.push(ime_stamp(&text, ed.caret, ed.anchor));
-                    changed = true;
-                }
-            }
-            egui::Event::Ime(egui::ImeEvent::DeleteSurrounding { before_chars, after_chars }) => {
-                if ime_event_is_stale(app, composition_target) {
-                    continue;
-                }
-                let (a, b) = sel(&ed);
-                let before = prev_n_chars(&text, a, before_chars)..a;
-                let after = b..next_n_chars(&text, b, after_chars);
-                if !before.is_empty() || !after.is_empty() {
-                    let (before_caret, before_anchor) = (ed.caret, ed.anchor);
-                    apply_surrounding_deletion(&mut text, &mut ed, before, after);
-                    ime_before.get_or_insert((before_caret, before_anchor));
-                    ime_after.push(ime_stamp(&text, ed.caret, ed.anchor));
-                    changed = true;
-                }
-            }
-            // ordinary typing and paste are application-origin, even in the same pass as an IME event
-            egui::Event::Text(s) | egui::Event::Paste(s) => {
-                let s: String = s.chars().filter(|c| !c.is_control() || *c == '\n').collect();
-                if s.is_empty() {
-                    continue;
-                }
-                delete_sel(&mut text, &mut ed);
-                text.insert_str(ed.caret, &s);
-                ed.caret += s.len();
-                ed.anchor = ed.caret;
-                application_mutation = true;
-                changed = true;
-            }
-            // an input method (Chinese, Japanese, Korean) hands over its finished text as a commit (#1083)
-            egui::Event::Ime(egui::ImeEvent::Commit(s)) => {
-                if ime_event_is_stale(app, composition_target) {
-                    continue;
-                }
-                app.ime_composition = None;
-                app.ime_composition_viewport = None;
-                let s: String = s.chars().filter(|c| !c.is_control() || *c == '\n').collect();
-                let (before_caret, before_anchor) = (ed.caret, ed.anchor);
-                if s.is_empty() {
-                    // A commit replaces the selection even when the input method produced no text
-                    // (for example DeleteSurroundingBytes followed by an empty commit). An empty
-                    // commit with no selection stays a no-op.
-                    if delete_sel(&mut text, &mut ed) {
-                        ime_before.get_or_insert((before_caret, before_anchor));
-                        ime_after.push(ime_stamp(&text, ed.caret, ed.anchor));
-                        changed = true;
-                    }
-                } else {
-                    delete_sel(&mut text, &mut ed);
-                    text.insert_str(ed.caret, &s);
-                    ed.caret += s.len();
-                    ed.anchor = ed.caret;
-                    ime_before.get_or_insert((before_caret, before_anchor));
-                    ime_after.push(ime_stamp(&text, ed.caret, ed.anchor));
-                    changed = true;
-                }
-            }
-            egui::Event::Copy | egui::Event::Cut => {
-                let (a, b) = sel(&ed);
-                if a < b {
-                    ui.ctx().copy_text(text[a..b].to_string());
-                    if matches!(ev, egui::Event::Cut) && delete_sel(&mut text, &mut ed) {
-                        application_mutation = true;
-                        changed = true;
-                    }
-                }
-            }
-            egui::Event::Key { key, pressed: true, modifiers, .. } => {
-                let shift = modifiers.shift;
-                let mut moved = None;
-                match key {
-                    egui::Key::Escape => {
-                        // Escape cancels the edit now: a commit later in the same raw batch must
-                        // not still be inserted after the user cancelled.
-                        stop = true;
-                        custom_mutations = false;
-                        app.suspend_ime_input(ui.ctx());
-                        continue;
-                    }
-                    egui::Key::Enter => {
-                        delete_sel(&mut text, &mut ed);
-                        text.insert(ed.caret, '\n');
-                        ed.caret += 1;
-                        ed.anchor = ed.caret;
-                        application_mutation = true;
-                        changed = true;
-                    }
-                    egui::Key::Backspace => {
-                        let mut did = delete_sel(&mut text, &mut ed);
-                        if !did && ed.caret > 0 {
-                            let p = if modifiers.alt || modifiers.command { word_left(&text, ed.caret) } else { prev_boundary(&text, ed.caret) };
-                            text.replace_range(p..ed.caret, "");
-                            ed.caret = p;
-                            ed.anchor = p;
-                            did = true;
-                        }
-                        if did {
-                            application_mutation = true;
-                            changed = true;
-                        }
-                    }
-                    egui::Key::Delete => {
-                        let mut did = delete_sel(&mut text, &mut ed);
-                        if !did && ed.caret < text.len() {
-                            let n = next_boundary(&text, ed.caret);
-                            text.replace_range(ed.caret..n, "");
-                            did = true;
-                        }
-                        if did {
-                            application_mutation = true;
-                            changed = true;
-                        }
-                    }
-                    egui::Key::A if modifiers.command => {
-                        let moved = (ed.anchor, ed.caret) != (0, text.len());
-                        ed.anchor = 0;
-                        ed.caret = text.len();
-                        if moved {
-                            app.invalidate_ime_composition();
-                        }
-                    }
-                    egui::Key::ArrowLeft => {
-                        let (a, _) = sel(&ed);
-                        moved = Some(if !shift && ed.caret != ed.anchor {
-                            a
-                        } else if modifiers.command {
-                            l.lines[l.caret(ed.caret).2].range.start
-                        } else if modifiers.alt {
-                            word_left(&text, ed.caret)
-                        } else {
-                            prev_boundary(&text, ed.caret)
-                        });
-                    }
-                    egui::Key::ArrowRight => {
-                        let (_, b) = sel(&ed);
-                        moved = Some(if !shift && ed.caret != ed.anchor {
-                            b
-                        } else if modifiers.command {
-                            l.lines[l.caret(ed.caret).2].range.end
-                        } else if modifiers.alt {
-                            word_right(&text, ed.caret)
-                        } else {
-                            next_boundary(&text, ed.caret)
-                        });
-                    }
-                    egui::Key::ArrowUp | egui::Key::ArrowDown => {
-                        let (x, _, li) = l.caret(ed.caret);
-                        let target = if key == egui::Key::ArrowUp { li.checked_sub(1) } else { Some(li + 1).filter(|n| *n < l.lines.len()) };
-                        moved = Some(match target {
-                            Some(n) => l.hit(x, l.lines[n].baseline),
-                            None if key == egui::Key::ArrowUp => 0,
-                            None => text.len(),
-                        });
-                    }
-                    egui::Key::Home => moved = Some(l.lines[l.caret(ed.caret).2].range.start),
-                    egui::Key::End => moved = Some(l.lines[l.caret(ed.caret).2].range.end),
-                    _ => {}
-                }
-                if let Some(m) = moved {
-                    let previous_selection = (ed.caret, ed.anchor);
-                    // `m` comes from the layout of the text at the start of this batch, but an
-                    // earlier Text/Paste/IME event may already have changed `text`; clamp to a
-                    // UTF-8 boundary in the current text before a later event slices or inserts.
-                    ed.caret = char_boundary_floor(&text, m);
-                    if !shift {
-                        ed.anchor = ed.caret;
-                    }
-                    if previous_selection != (ed.caret, ed.anchor) {
-                        app.invalidate_ime_composition();
-                    }
-                }
-            }
-            // A pointer press is handled later in this pass (caret placement, another layer, or
-            // ending the edit). Events after it in the same raw batch belong to the new target
-            // and must not be applied to the old one.
-            egui::Event::PointerButton { pressed: true, .. } => {
-                custom_mutations = false;
-                app.suspend_ime_input(ui.ctx());
-            }
-            _ => {}
-        }
-        let current = local_reset_destination(app, &ed, &text, composition_target);
-        if from_ime {
-            if terminal {
-                app.ime_reset.terminal(ui.ctx().viewport_id());
-            } else {
-                app.ime_reset.remember(ui.ctx().viewport_id(), current);
-            }
-        } else if custom_mutations {
-            app.sync_live_ime_destination(ui.ctx(), current);
-        }
+        finish_text_event(app, ui, &state, composition_target, from_ime, terminal);
     }
-    if changed && text != tp.text {
+    if state.changed && state.text != tp.text {
         let action_index = actions.len();
+        let ime_before = state.ime_before;
         let first_before =
-            ime_before.and_then(|(cursor, anchor)| (!ime_after.is_empty()).then(|| ImeMutationStamp::from_committed(&tp.text, cursor, anchor, None)));
+            ime_before.and_then(|(cursor, anchor)| (!state.ime_after.is_empty()).then(|| ImeMutationStamp::from_committed(&tp.text, cursor, anchor, None)));
 
         *pending_ime = Some(PendingImeEdit {
             action_index,
-            clip: ed.clip,
-            layer: ed.layer,
+            clip: state.ed.clip,
+            layer: state.ed.layer,
             first_before,
-            before_cursor: ime_before.map_or(ed.caret, |(cursor, _)| cursor),
-            before_anchor: ime_before.map_or(ed.anchor, |(_, anchor)| anchor),
-            after: ime_after,
-            final_cursor: ed.caret,
-            final_anchor: ed.anchor,
-            application_mutation,
+            before_cursor: ime_before.map_or(state.ed.caret, |(cursor, _)| cursor),
+            before_anchor: ime_before.map_or(state.ed.anchor, |(_, anchor)| anchor),
+            final_cursor: state.ed.caret,
+            final_anchor: state.ed.anchor,
+            application_mutation: state.application_mutation,
+            after: state.ime_after,
         });
-        actions.push(("graphics.setText".into(), json!({"clip": ed.clip, "layer": ed.layer, "text": text, "merge": true})));
+        let text = std::mem::take(&mut state.text);
+        actions.push(("graphics.setText".into(), json!({"clip": state.ed.clip, "layer": state.ed.layer, "text": text, "merge": true})));
     } else {
         *pending_ime = None;
     }
-    if stop {
+    if state.stop {
         end_edit(app, ui);
     } else {
-        app.ui.gfx_edit = Some(ed);
+        app.ui.gfx_edit = Some(state.ed);
     }
 }
 
@@ -2082,6 +2202,15 @@ fn color32(c: [f32; 4]) -> Color32 {
     Color32::from_rgba_unmultiplied(q(c[0]), q(c[1]), q(c[2]), q(c[3]))
 }
 
+/// The formatting knobs of an inline graphics number field.
+struct NumberField<'a> {
+    id: &'a str,
+    speed: f64,
+    range: (f64, f64),
+    decimals: usize,
+    unit: &'a str,
+}
+
 struct Ctx<'a> {
     clip: ClipId,
     layer: usize,
@@ -2162,17 +2291,29 @@ impl Ctx<'_> {
     fn number(&mut self, ui: &mut egui::Ui, label: &str, id: &str, speed: f64, range: (f64, f64), dec: usize, unit: &str) {
         let v = pv(self.e, id, self.mt).as_f64().unwrap_or(0.0);
         let (r, mut vui) = self.row(ui, label);
-        let (resp, nv) =
-            crate::widgets::hot_number(&mut vui, label, egui::Id::unique(("gfxp", self.clip.0, self.layer, id)), v, speed, range, dec, unit, &self.t);
+        let (resp, nv) = crate::widgets::hot_number(
+            &mut vui,
+            label,
+            egui::Id::unique(("gfxp", self.clip.0, self.layer, id)),
+            v,
+            HotNumberOptions::new(speed, range, dec, unit, &self.t),
+        );
         self.auto(id, resp.rect, label);
         self.stopwatch(ui, r, id);
         if let Some(nv) = nv {
             self.set(id, json!(nv));
         }
     }
-    fn number_in(&mut self, vui: &mut egui::Ui, label: &str, id: &str, speed: f64, range: (f64, f64), dec: usize, unit: &str) {
+    fn number_in(&mut self, vui: &mut egui::Ui, label: &str, field: NumberField<'_>) {
+        let NumberField { id, speed, range, decimals, unit } = field;
         let v = pv(self.e, id, self.mt).as_f64().unwrap_or(0.0);
-        let (resp, nv) = crate::widgets::hot_number(vui, label, egui::Id::unique(("gfxp", self.clip.0, self.layer, id)), v, speed, range, dec, unit, &self.t);
+        let (resp, nv) = crate::widgets::hot_number(
+            vui,
+            label,
+            egui::Id::unique(("gfxp", self.clip.0, self.layer, id)),
+            v,
+            HotNumberOptions::new(speed, range, decimals, unit, &self.t),
+        );
         self.auto(id, resp.rect, id);
         if let Some(nv) = nv {
             self.set(id, json!(nv));
@@ -2187,11 +2328,7 @@ impl Ctx<'_> {
             &format!("{label} X"),
             egui::Id::unique(("gfxp", self.clip.0, self.layer, id, "x")),
             v.x,
-            1.0,
-            (-100_000.0, 100_000.0),
-            1,
-            " X",
-            &self.t,
+            HotNumberOptions::new(1.0, (-100_000.0, 100_000.0), 1, " X", &self.t),
         );
         vui.add_space(10.0);
         let (ry, ny) = crate::widgets::hot_number(
@@ -2199,11 +2336,7 @@ impl Ctx<'_> {
             &format!("{label} Y"),
             egui::Id::unique(("gfxp", self.clip.0, self.layer, id, "y")),
             v.y,
-            1.0,
-            (-100_000.0, 100_000.0),
-            1,
-            " Y",
-            &self.t,
+            HotNumberOptions::new(1.0, (-100_000.0, 100_000.0), 1, " Y", &self.t),
         );
         self.auto(&format!("{id}.x"), rx.rect, label);
         self.auto(&format!("{id}.y"), ry.rect, label);
@@ -2698,7 +2831,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 cx.check(&mut vui, on, "");
                 cx.color(&mut vui, col);
                 vui.add_space(6.0);
-                cx.number_in(&mut vui, &format!("{label} width"), w, 0.2, (0.0, 1000.0), 1, "");
+                cx.number_in(&mut vui, &format!("{label} width"), NumberField { id: w, speed: 0.2, range: (0.0, 1000.0), decimals: 1, unit: "" });
                 vui.add_space(6.0);
                 cx.choice(&mut vui, kind, graphic::STROKE_OPTS, 70.0);
             }
@@ -2905,5 +3038,86 @@ mod ime_byte_delete_tests {
         assert_ne!(a, graphics_ime_target(8, 11, 3, 42, 5), "sequence identity is part of the owner");
         let no_uid = graphics_ime_target(7, 11, 3, 0, 5);
         assert_ne!(no_uid, graphics_ime_target(7, 11, 4, 0, 5), "without a layer uid, the index is the identity");
+    }
+
+    /// A pointer-down starts a new target, so later Text, Paste and IME events in the same raw
+    /// batch must not be applied to the layer that was being edited before the click. The old loop
+    /// cleared `custom_mutations` here; the extracted helper once fell through to `Applied` and
+    /// typed every later event into the old layer.
+    #[test]
+    fn pointer_press_rejects_text_paste_and_ime_later_in_the_same_raw_batch() {
+        use filmcraft_geom::{Affine, Vec2};
+        use filmcraft_project::ClipId;
+        use filmcraft_project::graphic::{Appearance, LayerContent, LayerSpec, LayerTransform, TextProps};
+
+        let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+        let ed = GfxEdit { clip: 1, layer: 0, caret: 3, anchor: 3, ..Default::default() };
+        app.ui.gfx_edit = Some(ed.clone());
+        let props = TextProps {
+            text: "old".into(),
+            font: String::new(),
+            style: String::new(),
+            size: 72.0,
+            align: 0,
+            tracking: 0.0,
+            kerning: true,
+            ligatures: true,
+            leading: 0.0,
+            baseline_shift: 0.0,
+            faux_bold: false,
+            faux_italic: false,
+            caps: 0,
+            underline: false,
+            box_width: 0.0,
+            box_height: 0.0,
+            vertical: false,
+            runs: Vec::new(),
+        };
+        let view = super::LayerView {
+            clip: ClipId(1),
+            layer: 0,
+            spec: LayerSpec {
+                name: "Text".into(),
+                enabled: true,
+                uid: 0,
+                pin: None,
+                content: LayerContent::Text(props),
+                appearance: Appearance { fill: None, gradient: None, strokes: Vec::new(), background: None, shadow: None },
+                transform: LayerTransform { position: Vec2::ZERO, anchor: Vec2::ZERO, scale: Vec2::new(1.0, 1.0), rotation: 0.0, opacity: 1.0 },
+            },
+            to_screen: Affine::IDENTITY,
+            canvas_to_screen: Affine::IDENTITY,
+            local: [-50.0, -25.0, 50.0, 25.0],
+        };
+
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput {
+            focused: true,
+            events: vec![
+                egui::Event::PointerButton {
+                    pos: egui::pos2(20.0, 20.0),
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::Text("typed".into()),
+                egui::Event::Paste("pasted".into()),
+                egui::Event::Ime(egui::ImeEvent::Commit("committed".into())),
+            ],
+            ..Default::default()
+        };
+        let mut actions = Vec::new();
+        let mut pending_ime = None;
+        let mut focused = false;
+        let mut out = ctx.run_ui(raw, |ui| {
+            let response = ui.allocate_response(egui::vec2(100.0, 100.0), egui::Sense::click());
+            super::text_edit(&mut app, ui, &view, ed.clone(), &response, &mut actions, &mut pending_ime);
+            focused = ui.memory(|m| m.has_focus(egui::Id::unique(super::TEXT_EDIT_ID)));
+        });
+        out.textures_delta.clear();
+
+        assert!(focused, "the text editor must own input for this batch");
+        assert!(actions.is_empty(), "the pointer press must stop Text, Paste and IME editing the old layer");
+        assert!(pending_ime.is_none(), "a rejected batch has no pending IME edit");
     }
 }

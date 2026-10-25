@@ -11,6 +11,7 @@ use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
 use crate::state::KeyframeRef;
 use crate::theme::Tokens;
+use crate::widgets::HotNumberOptions;
 
 #[path = "effect_controls_selection.rs"]
 mod selection;
@@ -602,22 +603,38 @@ pub(crate) fn param_row(
     match (&pd.kind, &value) {
         (ParamKind::Float { min, max, soft_min, soft_max, unit, decimals }, ParamValue::Float(v)) => {
             let speed = ((soft_max - soft_min) / 400.0).max(0.01);
-            let (_, nv) = crate::widgets::hot_number(&mut vui, crate::i18n::t(pd.label), id, *v, speed, (*min, *max), *decimals as usize, unit, &t);
+            let (_, nv) = crate::widgets::hot_number(
+                &mut vui,
+                crate::i18n::t(pd.label),
+                id,
+                *v,
+                HotNumberOptions::new(speed, (*min, *max), *decimals as usize, unit, &t),
+            );
             if let Some(nv) = nv {
                 set = Some(json!(nv));
             }
         }
         (ParamKind::Angle, ParamValue::Float(v)) => {
-            let (_, nv) = crate::widgets::hot_number(&mut vui, crate::i18n::t(pd.label), id, *v, 0.5, (-36000.0, 36000.0), 1, "°", &t);
+            let (_, nv) = crate::widgets::hot_number(&mut vui, crate::i18n::t(pd.label), id, *v, HotNumberOptions::new(0.5, (-36000.0, 36000.0), 1, "°", &t));
             if let Some(nv) = nv {
                 set = Some(json!(nv));
             }
         }
         (ParamKind::Point, ParamValue::Vec2(p)) => {
-            let (_, nx) =
-                crate::widgets::hot_number(&mut vui, &format!("{} X", crate::i18n::t(pd.label)), id.with("x"), p.x, 1.0, (-100_000.0, 100_000.0), 1, "", &t);
-            let (_, ny) =
-                crate::widgets::hot_number(&mut vui, &format!("{} Y", crate::i18n::t(pd.label)), id.with("y"), p.y, 1.0, (-100_000.0, 100_000.0), 1, "", &t);
+            let (_, nx) = crate::widgets::hot_number(
+                &mut vui,
+                &format!("{} X", crate::i18n::t(pd.label)),
+                id.with("x"),
+                p.x,
+                HotNumberOptions::new(1.0, (-100_000.0, 100_000.0), 1, "", &t),
+            );
+            let (_, ny) = crate::widgets::hot_number(
+                &mut vui,
+                &format!("{} Y", crate::i18n::t(pd.label)),
+                id.with("y"),
+                p.y,
+                HotNumberOptions::new(1.0, (-100_000.0, 100_000.0), 1, "", &t),
+            );
             if nx.is_some() || ny.is_some() {
                 set = Some(json!([nx.unwrap_or(p.x), ny.unwrap_or(p.y)]));
             }
@@ -824,11 +841,7 @@ pub fn lumetri_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                             crate::i18n::t(pd.label),
                             egui::Id::unique(("lum", pd.id)),
                             val,
-                            (soft_max - soft_min) / 300.0,
-                            (*min, *max),
-                            1,
-                            "",
-                            &t,
+                            HotNumberOptions::new((soft_max - soft_min) / 300.0, (*min, *max), 1, "", &t),
                         );
                         if s.changed() {
                             actions.push(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": val}));
@@ -930,11 +943,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                                 &format!("{label} X"),
                                 egui::Id::unique(("pp", p, "x", clip.0)),
                                 v.x,
-                                speed,
-                                range,
-                                0,
-                                " X",
-                                &t,
+                                HotNumberOptions::new(speed, range, 0, " X", &t),
                             );
                             vui.add_space(10.0);
                             let (_, ny) = crate::widgets::hot_number(
@@ -942,11 +951,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                                 &format!("{label} Y"),
                                 egui::Id::unique(("pp", p, "y", clip.0)),
                                 v.y,
-                                speed,
-                                range,
-                                0,
-                                " Y",
-                                &t,
+                                HotNumberOptions::new(speed, range, 0, " Y", &t),
                             );
                             if nx.is_some() || ny.is_some() {
                                 actions.push((
@@ -961,11 +966,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                                 label,
                                 egui::Id::unique(("pp", p, clip.0)),
                                 v,
-                                speed,
-                                range,
-                                if p == "scale" { 0 } else { 1 },
-                                unit,
-                                &t,
+                                HotNumberOptions::new(speed, range, if p == "scale" { 0 } else { 1 }, unit, &t),
                             );
                             if let Some(nv) = nv {
                                 actions.push(("effects.setParam".into(), json!({"clip": clip.0, "effect": "motion", "param": p, "value": nv})));
@@ -982,7 +983,13 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         .layout(egui::Layout::left_to_right(egui::Align::Center)),
                 );
                 if let Some(ParamValue::Float(v)) = val("opacity", "opacity") {
-                    let (_, nv) = crate::widgets::hot_number(&mut vui, tl!("Opacity"), egui::Id::unique(("pp-op", clip.0)), v, 0.5, (0.0, 100.0), 0, " %", &t);
+                    let (_, nv) = crate::widgets::hot_number(
+                        &mut vui,
+                        tl!("Opacity"),
+                        egui::Id::unique(("pp-op", clip.0)),
+                        v,
+                        HotNumberOptions::new(0.5, (0.0, 100.0), 0, " %", &t),
+                    );
                     if let Some(nv) = nv {
                         actions.push(("effects.setParam".into(), json!({"clip": clip.0, "effect": "opacity", "param": "opacity", "value": nv})));
                     }
@@ -999,7 +1006,13 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                             .layout(egui::Layout::left_to_right(egui::Align::Center)),
                     );
                     let v = val("crop", p).and_then(|v| v.as_f64()).unwrap_or(0.0);
-                    let (_, nv) = crate::widgets::hot_number(&mut vui, label, egui::Id::unique(("pp-crop", p, clip.0)), v, 0.2, (0.0, 100.0), 1, " %", &t);
+                    let (_, nv) = crate::widgets::hot_number(
+                        &mut vui,
+                        label,
+                        egui::Id::unique(("pp-crop", p, clip.0)),
+                        v,
+                        HotNumberOptions::new(0.2, (0.0, 100.0), 1, " %", &t),
+                    );
                     if let Some(nv) = nv {
                         if crop.is_none() {
                             actions.push(("effects.apply".into(), json!({"clips": [clip.0], "effect": "crop"})));
@@ -1023,7 +1036,13 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
             let v = val("volume", "level").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let (_, nv) = crate::widgets::hot_number(&mut vui, tl!("Level"), egui::Id::unique(("pp-vol", clip.0)), v, 0.1, (-96.0, 15.0), 1, " dB", &t);
+            let (_, nv) = crate::widgets::hot_number(
+                &mut vui,
+                tl!("Level"),
+                egui::Id::unique(("pp-vol", clip.0)),
+                v,
+                HotNumberOptions::new(0.1, (-96.0, 15.0), 1, " dB", &t),
+            );
             if let Some(nv) = nv {
                 actions.push(("effects.setParam".into(), json!({"clip": clip.0, "effect": "volume", "param": "level", "value": nv})));
             }
@@ -1035,7 +1054,13 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
             let v = val("panner", "balance").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let (_, nv) = crate::widgets::hot_number(&mut vui, tl!("Pan"), egui::Id::unique(("pp-pan", clip.0)), v, 0.5, (-100.0, 100.0), 0, "", &t);
+            let (_, nv) = crate::widgets::hot_number(
+                &mut vui,
+                tl!("Pan"),
+                egui::Id::unique(("pp-pan", clip.0)),
+                v,
+                HotNumberOptions::new(0.5, (-100.0, 100.0), 0, "", &t),
+            );
             if let Some(nv) = nv {
                 actions.push(("effects.setParam".into(), json!({"clip": clip.0, "effect": "panner", "param": "balance", "value": nv})));
             }

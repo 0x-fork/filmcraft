@@ -34,6 +34,7 @@ use serde_json::{Value, json};
 use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
+use crate::widgets::HotNumberOptions;
 
 // ------------------------------------------------------------------------------------- fader law
 
@@ -657,7 +658,13 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
             }
             let vr = Rect::from_center_size(pos2(kc.x, y + 48.0), vec2(56.0, 16.0));
             let mut vui = ui.new_child(egui::UiBuilder::new().max_rect(vr).layout(egui::Layout::top_down(egui::Align::Center)));
-            let (vresp, nv) = crate::widgets::hot_number(&mut vui, tl!("Pan"), egui::Id::unique((&ap, "panValue")), pan, 1.0, (-100.0, 100.0), 1, "", &t);
+            let (vresp, nv) = crate::widgets::hot_number(
+                &mut vui,
+                tl!("Pan"),
+                egui::Id::unique((&ap, "panValue")),
+                pan,
+                HotNumberOptions::new(1.0, (-100.0, 100.0), 1, "", &t),
+            );
             app.auto.add(&format!("{ap}.panValue"), vresp.rect, &format!("{pan:.1}"));
             if let Some(v) = nv {
                 cx.cmd("mixer.setValue", json!({"strip": sid, "lane": LANE_PAN, "value": v}));
@@ -793,8 +800,13 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
         // fader value (hot text)
         let vr = Rect::from_min_size(pos2(x + 4.0, sr.max.y - name_h - value_h), vec2(56.0, value_h));
         let mut vui = ui.new_child(egui::UiBuilder::new().max_rect(vr));
-        let (vresp, nv) =
-            crate::widgets::hot_number(&mut vui, tl!("Volume"), egui::Id::unique((&ap, "value")), vol.max(-96.0), 0.1, (FADER_MIN_DB, FADER_MAX_DB), 1, "", &t);
+        let (vresp, nv) = crate::widgets::hot_number(
+            &mut vui,
+            tl!("Volume"),
+            egui::Id::unique((&ap, "value")),
+            vol.max(-96.0),
+            HotNumberOptions::new(0.1, (FADER_MIN_DB, FADER_MAX_DB), 1, "", &t),
+        );
         app.auto.add(&format!("{ap}.value"), vresp.rect, &db_text(vol));
         if let Some(v) = nv {
             cx.cmd("mixer.setValue", json!({"strip": sid, "lane": LANE_VOLUME, "value": v}));
@@ -862,7 +874,13 @@ fn pan51_panner(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, tr: &Tr
     small_text(ui, pos2(col_x, r.min.y + 6.0), Align2::LEFT_CENTER, tl!("Center"), 9.0, t.text_dim);
     let cr = Rect::from_min_size(pos2(col_x, r.min.y + 12.0), vec2(r.max.x - col_x, 14.0));
     let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(cr));
-    let (cresp, nc) = crate::widgets::hot_number(&mut cui, tl!("Center"), egui::Id::unique((ap, "pan51.center")), center, 1.0, (0.0, 100.0), 0, "%", &t);
+    let (cresp, nc) = crate::widgets::hot_number(
+        &mut cui,
+        tl!("Center"),
+        egui::Id::unique((ap, "pan51.center")),
+        center,
+        HotNumberOptions::new(1.0, (0.0, 100.0), 0, "%", &t),
+    );
     app.auto.add(&format!("{ap}.pan51.center"), cresp.rect, &format!("Center {center:.0} %"));
     if let Some(v) = nc {
         cx.cmd("mixer.setValue", json!({"strip": sid, "lane": LANE_PAN51_CENTER, "value": v}));
@@ -870,8 +888,13 @@ fn pan51_panner(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, tr: &Tr
     small_text(ui, pos2(col_x, r.min.y + 32.0), Align2::LEFT_CENTER, "LFE", 9.0, t.text_dim);
     let lr = Rect::from_min_size(pos2(col_x, r.min.y + 38.0), vec2(r.max.x - col_x, 14.0));
     let mut lui = ui.new_child(egui::UiBuilder::new().max_rect(lr));
-    let (lresp, nl) =
-        crate::widgets::hot_number(&mut lui, "LFE", egui::Id::unique((ap, "pan51.lfe")), lfe.max(FADER_MIN_DB), 0.5, (FADER_MIN_DB, FADER_MAX_DB), 1, "", &t);
+    let (lresp, nl) = crate::widgets::hot_number(
+        &mut lui,
+        "LFE",
+        egui::Id::unique((ap, "pan51.lfe")),
+        lfe.max(FADER_MIN_DB),
+        HotNumberOptions::new(0.5, (FADER_MIN_DB, FADER_MAX_DB), 1, "", &t),
+    );
     app.auto.add(&format!("{ap}.pan51.lfe"), lresp.rect, &format!("LFE {}", db_text(lfe)));
     if let Some(v) = nl {
         cx.cmd("mixer.setValue", json!({"strip": sid, "lane": LANE_PAN51_LFE, "value": v}));
@@ -1086,8 +1109,13 @@ pub fn clip_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if !active {
             vui.set_opacity(0.4);
         }
-        let (vresp, nv) =
-            crate::widgets::hot_number(&mut vui, tl!("Volume"), egui::Id::unique((&ap, "value")), vol.max(-96.0), 0.1, (FADER_MIN_DB, FADER_MAX_DB), 1, "", &t);
+        let (vresp, nv) = crate::widgets::hot_number(
+            &mut vui,
+            tl!("Volume"),
+            egui::Id::unique((&ap, "value")),
+            vol.max(-96.0),
+            HotNumberOptions::new(0.1, (FADER_MIN_DB, FADER_MAX_DB), 1, "", &t),
+        );
         app.auto.add(&format!("{ap}.value"), vresp.rect, &db_text(vol));
         if let (Some(v), true) = (nv, active) {
             set(&mut acts, "volume", "level", v, !vresp.dragged() || vresp.drag_started());

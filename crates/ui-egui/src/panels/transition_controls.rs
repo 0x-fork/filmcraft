@@ -28,9 +28,9 @@
 //! the dialog's `transitionDuration.value`, `.ok`, `.cancel`.
 
 use egui::{Align2, Pos2, Rect, RichText, Sense, Stroke, pos2, vec2};
+use filmcraft_edit::Edge;
 use filmcraft_edit::transitions::{self as trn, Alignment};
-use filmcraft_edit::{Edge, EditCtx};
-use filmcraft_project::{ClipId, ParamKind, ParamValue, Transition, TransitionId};
+use filmcraft_project::{ParamKind, ParamValue, Transition, TransitionId};
 use filmcraft_time::{FrameRate, Tick};
 use serde_json::{Value, json};
 
@@ -365,7 +365,8 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
         && d.cut
         && let (Some(pos), Some(a), Some(b)) = (sresp.interact_pointer_pos(), x.from, x.to)
     {
-        d.roll = roll_reach(app, a, b, rate.snap_nearest(ticks_for(lane, d.view, pos.x - d.from_x)));
+        // as far as `timeline.roll` will move it on release; 0 when the roll would fail
+        d.roll = filmcraft_engine::commands::roll_delta(&app.session, a, b, rate.snap_nearest(ticks_for(lane, d.view, pos.x - d.from_x))).unwrap_or(Tick::ZERO);
     } else if sresp.dragged()
         && let Some(d) = drag.as_mut()
         && !d.cut
@@ -409,28 +410,6 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
         None => m.remove::<LaneDrag>(mem),
     });
     change
-}
-
-/// How far `timeline.roll` would move the cut between `left` and `right` toward `want`: the same
-/// limits on a copy of the sequence (the clips' media, a frame left in each, the transition on the
-/// cut, linked clips when Linked Selection is on). 0 when the roll would fail.
-fn roll_reach(app: &FilmcraftApp, left: ClipId, right: ClipId, want: Tick) -> Tick {
-    let Some(seq) = app.session.active_sequence() else { return Tick::ZERO };
-    let project = &app.session.project;
-    let durations = |item| filmcraft_engine::media_duration(project, &app.session.media, item);
-    let starts = |item| filmcraft_engine::media_start(project, item);
-    let mut next = project.next_id;
-    let mut ctx = EditCtx { next_id: &mut next, media_duration: &durations, media_start: &starts, min_duration: seq.settings.frame_rate.frame_duration() };
-    let mut d = want;
-    for (l, r) in filmcraft_engine::commands::linked_roll_pairs(seq, left, right, app.session.state.linked_selection) {
-        let mut probe = seq.clone();
-        match filmcraft_edit::roll(&mut probe, l, r, d, &mut ctx) {
-            Ok(reach) if reach.abs() < d.abs() => d = reach,
-            Ok(_) => {}
-            Err(_) => return Tick::ZERO,
-        }
-    }
-    d
 }
 
 /// The timeline's ruler: ticks and sequence timecode across `view` (the clip view's spacing).

@@ -198,8 +198,7 @@ fn transition_anchor(track: &Track, tr: &Transition) -> Option<Tick> {
 /// Keep transitions on their edit points after an edit moved cuts (ripple trim, roll, slide, ripple
 /// speed change): each transition shifts by as much as its anchor clip edge moved. A transition
 /// between two clips stays within them, whether its cut moved or one of the clips got shorter
-/// (shortened when they are now shorter than it), and its stored alignment follows where that
-/// leaves it on the cut.
+/// ([`keep_within_clips`]).
 fn transitions_follow_cuts(before: &Sequence, after: &mut Sequence) {
     let frame = after.settings.frame_rate.frame_duration();
     for track in after.all_tracks_mut() {
@@ -212,29 +211,42 @@ fn transitions_follow_cuts(before: &Sequence, after: &mut Sequence) {
                     (Some(a), Some(b)) => b - a,
                     _ => Tick::ZERO,
                 };
-                let within = match (tr.from.and_then(|c| track.item(c)), tr.to.and_then(|c| track.item(c))) {
-                    (Some(f), Some(t)) if f.start < t.end() => Some((f.start, t.start, t.end())),
-                    _ => None,
-                };
-                (d, within)
+                (d, clips_span(track, tr))
             })
             .collect();
         for (tr, (d, within)) in track.transitions.iter_mut().zip(shifts) {
             tr.start += d;
-            if let Some((lo, cut, hi)) = within
-                && (tr.start < lo || tr.end() > hi)
-            {
-                tr.duration = tr.duration.min(hi - lo);
-                tr.start = tr.start.clamp(lo, hi - tr.duration);
-                // as `transitions::set_span` stores it (interchange): Custom Start has no variant
-                tr.align = match transitions::alignment(tr, cut, frame) {
-                    transitions::Alignment::Start => TransitionAlign::StartAtCut,
-                    transitions::Alignment::End => TransitionAlign::EndAtCut,
-                    transitions::Alignment::Center | transitions::Alignment::Custom => TransitionAlign::CenterAtCut,
-                };
+            if let Some(span) = within {
+                keep_within_clips(tr, span, frame);
             }
         }
     }
+}
+
+/// The two clips of a transition between clips as (first clip's start, cut, second clip's end),
+/// while they still overlap the cut's span.
+fn clips_span(track: &Track, tr: &Transition) -> Option<(Tick, Tick, Tick)> {
+    match (tr.from.and_then(|c| track.item(c)), tr.to.and_then(|c| track.item(c))) {
+        (Some(f), Some(t)) if f.start < t.end() => Some((f.start, t.start, t.end())),
+        _ => None,
+    }
+}
+
+/// Move a transition that reaches past its two clips (`span`, from [`clips_span`]) back inside
+/// them, shortened when the clips are now shorter than it. Its stored alignment follows where that
+/// leaves it on the cut, as `transitions::set_span` stores it (interchange): Custom Start has no
+/// variant.
+fn keep_within_clips(tr: &mut Transition, (lo, cut, hi): (Tick, Tick, Tick), frame: Tick) {
+    if tr.start >= lo && tr.end() <= hi {
+        return;
+    }
+    tr.duration = tr.duration.min(hi - lo);
+    tr.start = tr.start.clamp(lo, hi - tr.duration);
+    tr.align = match transitions::alignment(tr, cut, frame) {
+        transitions::Alignment::Start => TransitionAlign::StartAtCut,
+        transitions::Alignment::End => TransitionAlign::EndAtCut,
+        transitions::Alignment::Center | transitions::Alignment::Custom => TransitionAlign::CenterAtCut,
+    };
 }
 
 /// Keep a clip's one-sided transitions (a fade in from nothing, a fade out to nothing) on its edges
@@ -258,30 +270,14 @@ fn fades_follow_edges(track: &mut Track, clip: ClipId) {
 }
 
 /// Keep each transition between `clip` and its neighbor within the two clips after a regular trim
-/// or a non-ripple speed change made `clip` shorter: the transition is shortened when the clips are
-/// now shorter than it, moved back inside them, and its stored alignment follows where that leaves it
-/// on the cut (as `transitions::set_span` stores it: Custom Start has no variant).
+/// or a non-ripple speed change made `clip` shorter ([`keep_within_clips`]).
 fn transitions_stay_within_clips(track: &mut Track, clip: ClipId, frame: Tick) {
-    let spans: Vec<Option<(Tick, Tick, Tick)>> = track
-        .transitions
-        .iter()
-        .map(|tr| match (tr.from.and_then(|c| track.item(c)), tr.to.and_then(|c| track.item(c))) {
-            (Some(f), Some(t)) if (f.id == clip || t.id == clip) && f.start < t.end() => Some((f.start, t.start, t.end())),
-            _ => None,
-        })
-        .collect();
+    let spans: Vec<Option<(Tick, Tick, Tick)>> =
+        track.transitions.iter().map(|tr| clips_span(track, tr).filter(|_| tr.from == Some(clip) || tr.to == Some(clip))).collect();
     for (tr, span) in track.transitions.iter_mut().zip(spans) {
-        let Some((lo, cut, hi)) = span else { continue };
-        if tr.start >= lo && tr.end() <= hi {
-            continue;
+        if let Some(span) = span {
+            keep_within_clips(tr, span, frame);
         }
-        tr.duration = tr.duration.min(hi - lo);
-        tr.start = tr.start.clamp(lo, hi - tr.duration);
-        tr.align = match transitions::alignment(tr, cut, frame) {
-            transitions::Alignment::Start => filmcraft_project::TransitionAlign::StartAtCut,
-            transitions::Alignment::End => filmcraft_project::TransitionAlign::EndAtCut,
-            transitions::Alignment::Center | transitions::Alignment::Custom => filmcraft_project::TransitionAlign::CenterAtCut,
-        };
     }
 }
 

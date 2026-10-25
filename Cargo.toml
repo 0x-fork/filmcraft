@@ -72,12 +72,12 @@ chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 rayon = "1"
 proptest = "1"
 roxmltree = "0.21"
-craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "6e7f28518dd1cb57e1624bdc269c3c14316b13ae" }
-craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "6e7f28518dd1cb57e1624bdc269c3c14316b13ae", default-features = false }
+craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "865c9af7fdf455cd3892402d18e526a9f019c6bc" }
+craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "865c9af7fdf455cd3892402d18e526a9f019c6bc", default-features = false }
 
 # ui
 # Shared frontend components; keep this dependency above the engine boundary.
-craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "6e7f28518dd1cb57e1624bdc269c3c14316b13ae", features = ["serde", "native-windows"] }
+craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "865c9af7fdf455cd3892402d18e526a9f019c6bc", features = ["serde", "native-windows"] }
 egui = "0.36"
 eframe = { version = "0.36", default-features = false }
 egui_kittest = "0.36"

@@ -207,19 +207,19 @@ fn fills_in(d: &Driver, area: egui::Rect) -> (Vec<(egui::Rect, egui::Color32)>, 
     (rects, verts)
 }
 
-/// View ▸ Transparency Grid and the wrench menu item paint a gray and white checkerboard behind
+/// The wrench menu's Transparency Grid paints a gray and white checkerboard behind
 /// the picture instead of the monitor background; each monitor keeps its own setting.
 #[test]
 fn transparency_grid_paints_a_checkerboard_behind_the_picture() {
     use filmcraft_ui_egui::frames::Target;
     use filmcraft_ui_egui::panels::monitor_view::{GRID_DARK, GRID_LIGHT};
     let mut d = Driver::demo();
-    let checked = |d: &mut Driver| {
-        let menu = d.ok("ui.menu.list", json!({}));
-        menu.as_array().unwrap().iter().find(|m| m["id"] == "view.transparencyGrid").expect("View ▸ Transparency Grid")["checked"].clone()
-    };
+    // the check mark of the wrench menu item
+    let checked = |d: &mut Driver| filmcraft_ui_egui::panels::monitor_view::checked(d.harness.state(), "view.transparencyGrid");
+    let menu = d.ok("ui.menu.list", json!({}));
+    assert!(menu.as_array().unwrap().iter().all(|m| m["id"] != "view.transparencyGrid"), "not in the View menu");
     assert_eq!(d.program()["transparency_grid"], false, "off by default");
-    assert_eq!(checked(&mut d), false);
+    assert_eq!(checked(&mut d), Some(false));
     let r = d.rect("program.picture");
     let pic = egui::Rect::from_min_size(egui::pos2(r[0] as f32, r[1] as f32), egui::vec2(r[2] as f32, r[3] as f32));
     let covers = |rects: &[(egui::Rect, egui::Color32)]| {
@@ -233,7 +233,7 @@ fn transparency_grid_paints_a_checkerboard_behind_the_picture() {
     d.click("program.settings.transparencyGrid");
     d.frames(2);
     assert_eq!(d.program()["transparency_grid"], true);
-    assert_eq!(checked(&mut d), true);
+    assert_eq!(checked(&mut d), Some(true));
     let (rects, verts) = fills_in(&d, pic);
     assert!(covers(&rects), "the light squares fill the picture");
     let dark = verts.iter().filter(|c| **c == GRID_DARK).count();

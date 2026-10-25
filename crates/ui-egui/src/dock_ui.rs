@@ -203,10 +203,12 @@ impl FilmcraftApp {
     }
 
     /// Whether a modal dialog is open: Settings, Recovery or Revert (egui `Modal`s), any other
-    /// egui `Modal` shown last frame, or a native file dialog. egui's `Modal` blocks input only
-    /// in the main window, so the dock area blocks its native windows meanwhile.
+    /// egui `Modal` shown last frame, the Save changes? prompt of Quit or Close Project, or a
+    /// native file dialog. egui's `Modal` blocks input only in the main window, so the dock area
+    /// blocks its native windows meanwhile.
     fn modal_open(&self, ctx: &egui::Context) -> bool {
         matches!(self.dialog, Some(crate::Dialog::Preferences | crate::Dialog::Recovery | crate::Dialog::RevertConfirm))
+            || self.ui.clip_dialog.as_ref().is_some_and(|dialog| matches!(dialog.command.as_str(), "app.quit" | "file.closeProject"))
             || self.native_dialog_open()
             || ctx.memory(|memory| memory.top_modal_layer().is_some())
     }
@@ -246,7 +248,10 @@ impl FilmcraftApp {
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt("filmcraft-dock-area"));
         child.set_clip_rect(body.intersect(ui.clip_rect()));
         let seq_width = dock::sequence_tabs_width(ui, &seqs);
-        self.auto.windows.clear();
+        // Known before anything draws, so header elements of a native window (the ≡ menu, the
+        // Timeline's sequence tabs), drawn before its bodies, carry that window too.
+        self.auto.windows =
+            self.ui.dock.floating.iter().enumerate().map(|(index, window)| (DockArea::<PanelKind>::window_viewport(area_id(), window.id), index)).collect();
         let mut content =
             FilmContent { app: self, seqs, seq_width, tokens: t, seq_actions: Vec::new(), menu: None, bodies: Vec::new(), restore_workspace: false };
         let output = area.show_content(&mut child, &layout, &style, &mut content);
@@ -454,16 +459,16 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         // A panel in its own OS window draws in that window's coordinates: its automation
         // elements carry the window so they are not matched against main-window points.
         let viewport = ui.ctx().viewport_id();
-        if viewport != egui::ViewportId::ROOT
-            && let Some(index) = self.app.ui.dock.floating.iter().position(|window| window.contains(panel))
-        {
-            self.app.auto.windows.insert(viewport, index);
-        }
         self.app.auto.viewport = viewport;
         self.app.auto.add(&format!("panel.{}", panel.id()), rect, panel.title());
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).id_salt(("panel", panel.id())));
         child.set_clip_rect(rect.intersect(ui.clip_rect()));
         panels::show(self.app, &mut child, *panel, rect);
+        // FilmCraft's drag payload lives in context data, not egui's drag-and-drop, so craft-ui
+        // routes it to the native window under the pointer only when asked, each frame.
+        if panels::dragging(ui.ctx()) {
+            craft_ui::docking::route_app_drag(ui.ctx(), area_id());
+        }
         self.app.auto.viewport = egui::ViewportId::ROOT;
         // The body fills its frame; allocating it lets a floated panel take its full size.
         ui.allocate_rect(ui.max_rect(), Sense::hover());

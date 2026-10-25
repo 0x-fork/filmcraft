@@ -96,7 +96,9 @@ title bar, resizes from every edge and splits like the main window. While a moda
 (Settings, Recovery, Revert, a file dialog), the native windows are dimmed and take no input.
 The main window's input rewrite (macOS Control+Click as a secondary click,
 `--control-input-only`) also runs in each native window, and files dropped on one are imported
-like files dropped on the main window; on the Timeline they land at the drop point. On Wayland
+like files dropped on the main window; on the Timeline they land at the drop point. A drag from
+a panel (a clip from the Source Monitor or the Project panel, an effect, a template) drops on a
+panel in any of the app's windows. On Wayland
 floating windows stay inside the main window. Where egui embeds viewports (tests), floating
 windows stay inside the main window too.
 

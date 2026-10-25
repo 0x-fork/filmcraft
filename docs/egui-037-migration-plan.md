@@ -1,6 +1,20 @@
 # FilmCraft — egui 0.37 migration plan
 
-Current landing status, 2026-10-25: the migration integrates main `bfc23840b603e69c782302c6ed04d4a9f6ec26a8` and uses egui `6d518fc799681571963842f95b55a6b68431b15a`, winit `a517b3846ee8457d84ee4975110bfda6797c44dc` and craft-ui `25da1314d443171b4adeaad2cd9454b273f35c6f`. Cargo.lock SHA-256 is `8ddb2d92ec359928491b47c084501bbecaa9ff708d678156dab99d1cbd24642e`; the independent media/document-path pins remain selected in the lockfile. Release workflows use craft-fonts `b076417b5880bd4154bd22f00695b1d28c6bea83`.
+Current reconciliation (2026-10-25): the local tree incorporates main
+`a504f3c5adc4cd60d9c1120916cddb50c9b24b86`. Managed CI
+`egui037-filmcraft-oracle8-full-ci-20261025-0871` passed formatting, strict lint,
+workspace tests and doctests, assets, layers and the 49-crate WASM check.
+It recorded 3,756 passing test executions, zero failures and 45 ignored across
+164 summaries. Required external oracles used the retained checksum-pinned
+FFmpeg 8.1.3 toolchain and fresh generated fixtures. The source patch matched
+the completed run before this prose update. Native/browser GUI, native IME,
+platform runtime, final packages and paired performance remain open. Human
+review and human merge are required.
+
+The following landing record qualifies the earlier candidate; its test counts
+and captured main are historical.
+
+Historical landing status, 2026-10-25: the migration integrates main `bfc23840b603e69c782302c6ed04d4a9f6ec26a8` and uses egui `6d518fc799681571963842f95b55a6b68431b15a`, winit `a517b3846ee8457d84ee4975110bfda6797c44dc` and craft-ui `25da1314d443171b4adeaad2cd9454b273f35c6f`. Cargo.lock SHA-256 is `8ddb2d92ec359928491b47c084501bbecaa9ff708d678156dab99d1cbd24642e`; the independent media/document-path pins remain selected in the lockfile. Release workflows use craft-fonts `b076417b5880bd4154bd22f00695b1d28c6bea83`.
 
 Fresh static review verified preservation of the captured main and the final dependency graph. The final managed CI run `egui037-filmcraft-oracle8-full-ci-20261025-0570` passed formatting, strict lint, workspace tests and doctests, layers, assets and the 49-crate WASM check, including the web app. It recorded 3,733 passing test executions, zero failures and 45 ignored across 164 summaries. Earlier passing counts below qualify their historical snapshots only. The icon-font attribution URL now identifies the selected egui source; font bytes are unchanged. Visible GUI, browser/platform runtime, native IME, final packages and paired performance remain separate acceptance gates. Human review and human merge are required.
 
@@ -25,13 +39,14 @@ is a disposition index only; it does not override any section.
 |---|---|
 | Repository | `storytold/filmcraft` |
 | Assigned checkout | `/home/codex/work/CraftApps/egui037-migration-20261022/filmcraft-implementation` |
-| Current branch HEAD | `fa550ce2d07bdfee6b1d7b6835e8abc8c6913d00` (2026-10-24; migration work is uncommitted on this base) |
+| Latest qualified tree | HEAD `4ce159e1cda036bbc972d6d27d125626ff714b98` (2026-10-25; merge of migration `df5f86ae` and main `bfc23840`), with main `a504f3c5adc4cd60d9c1120916cddb50c9b24b86` merged locally but uncommitted; `Cargo.toml` SHA-256 `d544c4368d222e79e34be0c681b3b34f435109903b4f85f1ccc4ff27e35b8efb`; `Cargo.lock` SHA-256 `8ddb2d92ec359928491b47c084501bbecaa9ff708d678156dab99d1cbd24642e` |
+| Planning-snapshot branch HEAD (historical) | `fa550ce2d07bdfee6b1d7b6835e8abc8c6913d00` (2026-10-24; migration work is uncommitted on this base) |
 | Planning baseline (historical) | `abf44fda9015f4b7a96dc338f6042499bf8e9d9f` (2026-10-22, "Reject non-hex characters in colour hex parsing (#2600)") |
-| `Cargo.toml` SHA-256 (current checkout) | `b41244b83b0aff71ab6e122826d20a49a2d59c35e87da57c8dfd228a962ec2cf` |
-| `Cargo.lock` SHA-256 (current checkout) | `67528fa8486c963dadbaf04e487ab5a8af59ac8f98dac97e1d51f40b953b5bb5` |
+| `Cargo.toml` SHA-256 (planning snapshot) | `b41244b83b0aff71ab6e122826d20a49a2d59c35e87da57c8dfd228a962ec2cf` |
+| `Cargo.lock` SHA-256 (planning snapshot) | `67528fa8486c963dadbaf04e487ab5a8af59ac8f98dac97e1d51f40b953b5bb5` |
 | Workspace | resolver 3, edition 2024, Rust 1.95, 50 crates plus 3 apps and `xtask` |
-| Current UI stack | `egui`, `eframe`, `egui-wgpu`, `egui-winit`, `egui_glow`, `egui_kittest`, `emath`, `epaint`, `epaint_default_fonts` at `0.37.0`; `winit 0.30.13`; `wgpu 30.0.1`; `accesskit 0.24.1`; `arboard 3.6.1` |
-| Shared UI dependency | Current manifest: `craft-ui` at `5c874d51eeb3de70e735c8ce87a59a7dedd47675`, `craft-media` at `f0ad6c1e1d297908915f4be315b0fcfc9be7b5d4`, `craft-docpath` at `82a24b006eefa036b43c09a67fb9a3fbd17ffe63`. Reconciled PR #199 base: `3832c47ef68a0e6214f2c1e85f3526b6adcb686e`; final immutable pins and lock remain G-PINS/G-CL2F/G-CRAFT-LIBS gates. |
+| Planned UI stack (planning snapshot) | `egui`, `eframe`, `egui-wgpu`, `egui-winit`, `egui_glow`, `egui_kittest`, `emath`, `epaint`, `epaint_default_fonts` at `0.37.0`; `winit 0.30.13`; `wgpu 30.0.1`; `accesskit 0.24.1`; `arboard 3.6.1` |
+| Shared UI dependency | Planning manifest (historical): `craft-ui` at `5c874d51eeb3de70e735c8ce87a59a7dedd47675`, `craft-media` at `f0ad6c1e1d297908915f4be315b0fcfc9be7b5d4`, `craft-docpath` at `82a24b006eefa036b43c09a67fb9a3fbd17ffe63`. Reconciled PR #199 base: `3832c47ef68a0e6214f2c1e85f3526b6adcb686e`; final immutable pins and lock remain G-PINS/G-CL2F/G-CRAFT-LIBS gates. |
 | Target release | `egui 0.37.0` = upstream commit `841a328ba2dd8f6996beb7189ebb7fc00e668a2a` |
 | Research candidate | `aiongg/egui` `craft/0.37` = `a4f9a17f64a6bae61350fb85804c9df0d9865916`; `aiongg/winit` `craft/0.30.13-lang` = `8b35388bd719e8cc86a95971ba0bc026c9a8f058` |
 | Production fork pins | **Unknown and deliberately not invented.** They become valid only after reviewed, published immutable `storytold/egui` and `storytold/winit` commits exist. See §3.2 and §15 gate G-PINS. |
@@ -705,6 +720,25 @@ starts from `FontDefinitions::default()` and uses `✔ ✓ ✖ ⚡ ⚠ ⚙ ♪ �
 10 files); with `system_fonts` off, those symbols can otherwise become tofu or switch to a
 platform face. Add a glyph-coverage assertion for exactly these characters plus a screenshot
 diff.
+
+### 6.1.1 Deliberate visible `▸` → `>` substitution
+
+The integrated tree replaces the user-visible chevron U+25B8 (BLACK RIGHT-POINTING SMALL
+TRIANGLE) with ASCII `>` in 38 lines across 18 files: status, toast and error hints that
+point at menu paths (`Settings ▸ Audio Hardware`, `File ▸ Link Media…`, `Export ▸ Hardware
+encoding`, `Project Settings ▸ Scratch Disks`, `Text to Speech ▸ Download natural voices`),
+the matching i18n source keys and translation rows, and the mixer post-fader insert prefix
+(`▸ ` → `> `). One `# View ▸ Reset Interface Zoom` header comment in each language file was
+updated for consistency; Rust doc comments were left unchanged.
+
+This is deliberate tofu avoidance. FilmCraft installs Inter at the front of the proportional
+family and `FontDefinitions::default()` then falls back to Ubuntu-Light, egui-icons and the
+monochrome emoji faces; none of those contains U+25B8 (verified from each bundled font's
+`cmap`), and `system_fonts` stays disabled, so proportional menu-path text could show a
+missing-glyph box. JetBrains Mono and Hack do cover U+25B8, but the substitution is global so
+the same hint reads identically in every family. ASCII `>` is used because every bundled face
+has it. This is a source-level decision; no visible GUI comparison has been recorded yet, so
+it remains part of the visible-GUI acceptance gate below.
 
 `FontData` construction is §5.1. Keep the process-wide caches (`OnceLock`) and the single
 system scan; do not call `filmcraft_text::fonts::scan_system()` in a UI pass.

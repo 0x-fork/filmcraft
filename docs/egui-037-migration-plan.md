@@ -1,5 +1,14 @@
 # FilmCraft — egui 0.37 migration plan
 
+Current landing status, 2026-10-25: the migration integrates main `bfc23840b603e69c782302c6ed04d4a9f6ec26a8` and uses egui `6d518fc799681571963842f95b55a6b68431b15a`, winit `a517b3846ee8457d84ee4975110bfda6797c44dc` and craft-ui `25da1314d443171b4adeaad2cd9454b273f35c6f`. Cargo.lock SHA-256 is `8ddb2d92ec359928491b47c084501bbecaa9ff708d678156dab99d1cbd24642e`; the independent media/document-path pins remain selected in the lockfile. Release workflows use craft-fonts `b076417b5880bd4154bd22f00695b1d28c6bea83`.
+
+Fresh static review verified preservation of the captured main and the final dependency graph. The final managed CI run `egui037-filmcraft-oracle8-full-ci-20261025-0570` passed formatting, strict lint, workspace tests and doctests, layers, assets and the 49-crate WASM check, including the web app. It recorded 3,733 passing test executions, zero failures and 45 ignored across 164 summaries. Earlier passing counts below qualify their historical snapshots only. The icon-font attribution URL now identifies the selected egui source; font bytes are unchanged. Visible GUI, browser/platform runtime, native IME, final packages and paired performance remain separate acceptance gates. Human review and human merge are required.
+
+External oracle checks ran with `FILMCRAFT_REQUIRE_ORACLES=1`, checksum-pinned FFmpeg 8.1.3 (`n8.1.3-24-g92611900bb`) and fresh generated fixtures. An earlier run using FFmpeg 7.1.5 failed ten codec/oracle/workflow tests. All ten passed unchanged with the new tools in managed job0567, before the full suite passed in0570; no decoder, tolerance or fixture-source changes were made to clear them. The newer tool provides the required APV, half-float, SVT-AV1 and Kvazaar capabilities. It remains a private external oracle, not an app dependency or distributed asset.
+
+The original planning and earlier qualification record follows. Its pins, hashes, paths and passing counts are historical.
+
+
 Status: local implementation revision after the independent adversarial reviews of
 `plan-reviews/filmcraft-v1.md` and `filmcraft-v2.md`. The owned checkout now contains the
 0.37 migration work; commits, pushes, publications, and final immutable pins/lock remain

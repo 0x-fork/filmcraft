@@ -16,21 +16,31 @@ struct Driver {
     harness: Harness<'static, FilmcraftApp>,
     tx: Sender<ControlRequest>,
     shots: Option<std::path::PathBuf>,
+    // Real Context output tokens, retained across later idle/control-channel frames.
+    reset_requests: Vec<egui::ImeResetId>,
 }
 
 impl Driver {
     fn new() -> Self {
+        Self::new_with(|_| {})
+    }
+
+    fn new_with(configure: impl FnOnce(&mut FilmcraftApp)) -> Self {
         let mut s = Session::default();
         s.execute("file.openDemoProject", json!({})).unwrap();
         let (tx, rx) = channel();
-        let app = FilmcraftApp::new(s).with_control(rx);
+        let mut app = FilmcraftApp::new(s).with_control(rx);
+        configure(&mut app);
         let shots = std::env::var_os("FILMCRAFT_UI_SHOTS").map(std::path::PathBuf::from);
         let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000);
         if shots.is_some() {
             b = b.wgpu().with_pixels_per_point(1.0);
         }
-        let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, shots };
+        let harness = b.build_eframe(move |cc| {
+            filmcraft_ui_egui::install_ime_reset_callbacks(&cc.egui_ctx);
+            app
+        });
+        let mut d = Driver { harness, tx, shots, reset_requests: Vec::new() };
         d.frames(4);
         d
     }
@@ -43,7 +53,14 @@ impl Driver {
             eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
             *self.harness.input_mut() = raw;
             self.harness.step();
+            if let Some(request) = self.harness.output().platform_output.ime.as_ref().and_then(|ime| ime.reset_request) {
+                self.reset_requests.push(request);
+            }
         }
+    }
+
+    fn reset_completed(&self) -> egui::Event {
+        egui::Event::ImeResetCompleted { request_id: *self.reset_requests.last().expect("a real Context reset request was published") }
     }
 
     fn call(&mut self, method: &str, params: Value) -> Value {
@@ -618,9 +635,9 @@ fn ime_late_preedit_after_target_replacement_cannot_retarget() {
         "a rejected stale composition is not an InputMethod receipt"
     );
 
-    // The rejected composition's commit ended the tombstone: a fresh composition on the
-    // replacement layer is legitimate and must be accepted.
-    d.harness.input_mut().events.extend([ime_preedit("よ"), ime_commit("y")]);
+    // Only the matching reset completion releases the old composition guard.
+    let fence = d.reset_completed();
+    d.harness.input_mut().events.extend([fence, ime_preedit("よ"), ime_commit("y")]);
     d.frames(2);
     assert_eq!(layer_texts(&mut d, clip), vec!["alpha".to_string(), "betay".to_string()], "a new composition on the current target still works");
 }
@@ -649,16 +666,17 @@ fn ime_empty_preedit_keeps_pending_commit_from_retargeting() {
         "the pending commit of the dismissed composition stayed on the old target"
     );
 
-    // The rejected commit ended that composition; a direct commit on the current target works.
-    d.harness.input_mut().events.push(ime_commit("y"));
+    // An old terminal is not acknowledgement; the exact fence admits a fresh direct commit.
+    let fence = d.reset_completed();
+    d.harness.input_mut().events.extend([fence, ime_commit("y")]);
     d.frames(2);
     assert_eq!(layer_texts(&mut d, clip), vec!["alpha".to_string(), "betay".to_string()], "a direct commit after the terminal boundary is accepted");
 }
 
-/// A rejected old commit is a terminal boundary even when the same raw batch immediately starts a
-/// new pre-edit. That new composition must survive to its later commit.
+/// A matching opaque fence is an ordered boundary; the fresh preedit after it survives to its
+/// later commit, while the old terminal before it remains rejected.
 #[test]
-fn ime_preedit_after_stale_commit_in_one_batch_is_accepted() {
+fn ime_preedit_after_reset_completion_in_one_batch_is_accepted() {
     let mut d = Driver::new();
     let clip = new_text_layer(&mut d, None, "alpha", 500.0);
     new_text_layer(&mut d, Some(clip), "beta", 900.0);
@@ -668,8 +686,9 @@ fn ime_preedit_after_stale_commit_in_one_batch_is_accepted() {
     d.frames(1);
     d.ok("ui.set", json!({"gfxEdit": {"clip": clip, "layer": 1, "caret": 4, "anchor": 4}}));
     d.frames(2);
-    // Wayland can coalesce the old terminal events and a new pre-edit into one raw batch.
-    d.harness.input_mut().events.extend([ime_preedit(""), ime_commit("x"), ime_preedit("よ")]);
+    // Preserve original raw order: old terminal, actual completion, then fresh preedit.
+    let fence = d.reset_completed();
+    d.harness.input_mut().events.extend([ime_preedit(""), ime_commit("x"), fence, ime_preedit("よ")]);
     d.frames(1);
     assert_eq!(layer_texts(&mut d, clip), vec!["alpha".to_string(), "beta".to_string()], "the old commit was still rejected");
     d.harness.input_mut().events.push(ime_commit("y"));
@@ -707,9 +726,8 @@ fn ime_same_pass_control_text_mutation_invalidates_composition() {
     d.ok("ui.set", json!({"gfxEdit": {"clip": clip, "layer": 0, "caret": 7, "anchor": 7}}));
     d.frames(1);
 
-    // The rejected commit ended the tombstone: the next composition on the same target is
-    // legitimate and must still be accepted.
-    d.harness.input_mut().events.extend([ime_preedit("よ"), ime_commit("z")]);
+    let fence = d.reset_completed();
+    d.harness.input_mut().events.extend([fence, ime_preedit("よ"), ime_commit("z")]);
     d.frames(2);
     assert_eq!(layer_texts(&mut d, clip), vec!["changedz".to_string()], "a new composition still starts after the text mutation");
 }
@@ -759,8 +777,8 @@ fn explicit_gfx_edit_index_selects_the_current_layer_not_a_stale_uid() {
 
 /// The fork sends `DeleteSurroundingBytes` immediately before the `Commit` it belongs to. A stale
 /// delete must not lift the tombstone, or the paired commit would be inserted into the replacement
-/// layer. The tombstone is bounded to this input batch: a later direct commit (no pre-edit) on the
-/// new target is legitimate and must still be accepted.
+/// layer. The request-bound guard survives the input batch; its exact completion admits a later
+/// direct commit (no pre-edit) on the new target.
 #[test]
 fn stale_delete_and_commit_pair_cannot_retarget_the_replacement_layer() {
     let mut d = Driver::new();
@@ -781,9 +799,9 @@ fn stale_delete_and_commit_pair_cannot_retarget_the_replacement_layer() {
     );
     assert!(d.ime().is_none_or(|ime| ime.change_cause != egui::output::ImeChangeCause::InputMethod), "a rejected stale pair is not an InputMethod receipt");
 
-    // The tombstone ends with that batch: a later commit-only composition is accepted on the
-    // layer the user is editing now.
-    d.harness.input_mut().events.push(ime_commit("y"));
+    // The old pair does not release admission; the exact native fence does.
+    let fence = d.reset_completed();
+    d.harness.input_mut().events.extend([fence, ime_commit("y")]);
     // One pass: the receipt belongs to the frame that observed the change. A later unchanged
     // frame reports `Other`, per the tracker contract.
     d.frames(1);
@@ -812,7 +830,8 @@ fn stale_empty_preedit_and_commit_pair_cannot_retarget_the_replacement_layer() {
     assert_eq!(layer_texts(&mut d, clip), vec!["alpha".to_string(), "beta".to_string()]);
     assert!(d.ime().is_none_or(|ime| ime.change_cause != egui::output::ImeChangeCause::InputMethod));
 
-    d.harness.input_mut().events.push(ime_commit("y"));
+    let fence = d.reset_completed();
+    d.harness.input_mut().events.extend([fence, ime_commit("y")]);
     d.frames(2);
     assert_eq!(layer_texts(&mut d, clip), vec!["alpha".to_string(), "betay".to_string()], "later commit-only input still works");
 }
@@ -942,8 +961,9 @@ fn ime_pointer_caret_move_rejects_next_batch_old_composition() {
             d.frames(1);
             assert_eq!(layer_texts(&mut d, clip), vec!["alpha".to_string()], "old composition cannot edit the clicked caret");
             assert_eq!(d.harness.state().session.history.undo.len(), undo, "rejection creates no Undo transaction");
-            // A fresh composition after the rejected terminal commit still applies to that caret.
-            d.harness.input_mut().events.extend([ime_preedit("fresh"), ime_commit("X")]);
+            // Rejected terminals do not release the guard. The actual reset fence does.
+            let fence = d.reset_completed();
+            d.harness.input_mut().events.extend([fence, ime_preedit("fresh"), ime_commit("X")]);
             d.frames(1);
             assert_eq!(layer_texts(&mut d, clip), vec![format!("{}X{}", &"alpha"[..caret], &"alpha"[caret..])]);
         }
@@ -1040,7 +1060,8 @@ fn ime_raw_select_all_rejects_old_terminal_input_and_preserves_direct_and_fresh_
                 assert_eq!(layer_texts(&mut d, clip), vec!["alpha".to_string()], "old terminal input cannot replace the new selection");
                 assert_eq!(d.harness.state().session.history.undo.len(), undo, "rejected input creates no Undo transaction");
                 assert!(!d.ime().expect("the unchanged selected editor remains focused").should_interrupt_composition, "the interruption is one-shot");
-                d.harness.input_mut().events.extend([ime_preedit("fresh"), ime_commit("Y")]);
+                let fence = d.reset_completed();
+                d.harness.input_mut().events.extend([fence, ime_preedit("fresh"), ime_commit("Y")]);
                 d.frames(1);
                 assert_eq!(layer_texts(&mut d, clip), vec!["Y".to_string()], "a fresh composition replaces the selection normally");
                 assert_eq!(d.harness.state().session.history.undo.len(), undo + 1);
@@ -1065,6 +1086,452 @@ fn ime_uninterrupted_same_owner_replacement_still_applies() {
     assert_eq!(ime.change_cause, egui::output::ImeChangeCause::InputMethod);
     assert!(!ime.should_interrupt_composition);
     assert_eq!(layer_texts(&mut d, clip), vec!["alphX".to_string()]);
+}
+
+/// Adapter acceptance with real Context output IDs; these injected controls are not an OS test.
+#[test]
+fn ime_reset_fence_admits_the_first_fresh_composition_without_an_old_terminal() {
+    for terminal_pending in [false, true] {
+        for split in [false, true] {
+            let mut d = Driver::new();
+            let clip = new_text_layer(&mut d, None, "alpha", 500.0);
+            new_text_layer(&mut d, Some(clip), "beta", 900.0);
+            d.ok("ui.set", json!({"gfxEdit": {"clip": clip, "layer": 0, "caret": 5, "anchor": 5}}));
+            d.frames(2);
+            d.harness.input_mut().events.push(ime_preedit("に"));
+            d.frames(1);
+            if terminal_pending {
+                d.harness.input_mut().events.push(ime_preedit(""));
+                d.frames(1);
+            }
+            d.ok("ui.set", json!({"gfxEdit": {"clip": clip, "layer": 1, "caret": 4, "anchor": 4}}));
+            d.frames(2);
+            let fence = d.reset_completed();
+            let requests = d.reset_requests.len();
+            let undo = d.harness.state().session.history.undo.len();
+            // A nonterminal stale update/deletion and arbitrary idle time cannot release it.
+            d.harness
+                .input_mut()
+                .events
+                .extend([ime_preedit("old"), egui::Event::Ime(egui::ImeEvent::DeleteSurroundingBytes { before_bytes: 1, after_bytes: 0 })]);
+            d.frames(5);
+            assert_eq!(d.reset_requests.len(), requests, "unchanged waiting passes must not issue new requests");
+            assert_eq!(layer_texts(&mut d, clip), vec!["alpha".to_owned(), "beta".to_owned()]);
+            assert_eq!(d.harness.state().session.history.undo.len(), undo);
+            d.harness.input_mut().events.push(fence);
+            if split {
+                d.frames(1); // F alone, with no fabricated old commit before it.
+            }
+            d.harness.input_mut().events.extend([ime_preedit("が"), ime_commit("が")]);
+            d.frames(1);
+            assert_eq!(layer_texts(&mut d, clip), vec!["alpha".to_owned(), "betaが".to_owned()], "terminal_pending={terminal_pending}, split={split}");
+            assert_eq!(d.harness.state().session.history.undo.len(), undo + 1);
+            d.exec("edit.undo", json!({}));
+            assert_eq!(layer_texts(&mut d, clip), vec!["alpha".to_owned(), "beta".to_owned()]);
+        }
+    }
+}
+
+#[test]
+fn ime_reset_local_caret_changes_supersede_a_completed_fence_before_the_next_event() {
+    for two_moves in [false, true] {
+        let mut d = Driver::new();
+        let clip = new_text_layer(&mut d, None, "alpha", 500.0);
+        d.ok("ui.set", json!({"gfxEdit": {"clip": clip, "layer": 0, "caret": 5, "anchor": 5}}));
+        d.frames(2);
+        d.harness.input_mut().events.push(ime_preedit("に"));
+        d.frames(1);
+        d.harness.input_mut().events.push(key_press(egui::Key::Home));
+        d.frames(1);
+        let first = d.reset_completed();
+        let first_id = *d.reset_requests.last().unwrap();
+        let undo = d.harness.state().session.history.undo.len();
+        let mut events = vec![first.clone(), key_press(egui::Key::End)];
+        if two_moves {
+            events.push(key_press(egui::Key::Home));
+        }
+        events.extend([first, egui::Event::Ime(egui::ImeEvent::DeleteSurrounding { before_chars: 1, after_chars: 1 }), ime_commit("stale")]);
+        d.harness.input_mut().events.extend(events);
+        d.frames(1);
+        let final_id = *d.reset_requests.last().unwrap();
+        assert_ne!(first_id, final_id, "the locally staged caret superseded the already completed request");
+        let caret = if two_moves { 0 } else { 5 };
+        assert_eq!(d.harness.state().ui.gfx_edit.as_ref().map(|e| (e.caret, e.anchor)), Some((caret, caret)));
+        assert_eq!(layer_texts(&mut d, clip), vec!["alpha".to_owned()]);
+        assert_eq!(d.harness.state().session.history.undo.len(), undo);
+        let foreign = egui::Context::default().request_ime_reset(egui::ViewportId::from_hash_of("foreign-film-window")).unwrap();
+        d.harness.input_mut().events.extend([
+            egui::Event::ImeResetCompleted { request_id: first_id },
+            egui::Event::ImeResetCompleted { request_id: foreign },
+            ime_commit("still stale"),
+            egui::Event::ImeResetCompleted { request_id: final_id },
+            ime_preedit("が"),
+            egui::Event::ImeResetCompleted { request_id: final_id }, // duplicate during fresh Active
+            ime_commit("が"),
+        ]);
+        d.frames(1);
+        assert_eq!(layer_texts(&mut d, clip), vec![if two_moves { "がalpha" } else { "alphaが" }.to_owned()]);
+        assert_eq!(d.harness.state().session.history.undo.len(), undo + 1);
+    }
+}
+
+#[test]
+fn ime_reset_hidden_logic_or_missing_geometry_rearms_the_same_model_caret_once() {
+    for hidden_logic in [false, true] {
+        let mut d = Driver::new();
+        let clip = new_text_layer(&mut d, None, "alpha", 500.0);
+        d.ok("ui.set", json!({"gfxEdit": {"clip": clip, "layer": 0, "caret": 5, "anchor": 5}}));
+        d.frames(2);
+        d.harness.input_mut().events.push(ime_preedit("に"));
+        d.frames(1);
+        d.harness.input_mut().events.push(key_press(egui::Key::Home));
+        d.frames(1);
+        let first = *d.reset_requests.last().unwrap();
+        let request_count = d.reset_requests.len();
+        let edit = d.harness.state().ui.gfx_edit.clone();
+        d.frames(4);
+        assert_eq!(d.reset_requests.len(), request_count, "logic before normal UI cannot suspend/rearm every frame");
+        if hidden_logic {
+            let ctx = d.harness.ctx.clone();
+            for _ in 0..3 {
+                let output = ctx.run_logic(&egui::RawInput::default(), |ctx| {
+                    d.harness.state_mut().logic_inner(ctx);
+                    d.harness.state_mut().finish_ime_reset_logic(ctx);
+                });
+                assert!(output.platform_output.ime.is_none());
+            }
+        } else {
+            d.harness.state_mut().ui.mode = filmcraft_ui_egui::state::Mode::Import;
+            d.frames(3);
+            assert!(d.ime().is_none());
+            d.harness.state_mut().ui.mode = filmcraft_ui_egui::state::Mode::Edit;
+        }
+        assert_eq!(d.harness.state().ui.gfx_edit, edit, "the model target/caret stayed the same");
+        d.frames(1);
+        let current = *d.reset_requests.last().unwrap();
+        assert_ne!(current, first, "reactivation must publish a NEW token even for the unchanged caret");
+        let after_activation = d.reset_requests.len();
+        d.frames(4);
+        assert_eq!(d.reset_requests.len(), after_activation);
+        d.harness.input_mut().events.extend([egui::Event::ImeResetCompleted { request_id: first }, ime_commit("old")]);
+        d.frames(1);
+        assert_eq!(layer_texts(&mut d, clip), vec!["alpha".to_owned()]);
+        d.harness.input_mut().events.push(egui::Event::ImeResetCompleted { request_id: current });
+        d.frames(1);
+        d.harness.input_mut().events.extend([ime_preedit("が"), ime_commit("が")]);
+        d.frames(1);
+        assert_eq!(layer_texts(&mut d, clip), vec!["がalpha".to_owned()]);
+    }
+}
+
+#[test]
+fn ime_reset_discarded_request_then_no_descriptor_rearms_on_return() {
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+    struct OutputWitness(Arc<Mutex<Vec<egui::ImeResetId>>>);
+    impl egui::Plugin for OutputWitness {
+        fn debug_name(&self) -> &'static str {
+            "Film reset output witness"
+        }
+        fn output_hook(&mut self, _ctx: &egui::Context, output: &mut egui::FullOutput) {
+            if let Some(id) = output.platform_output.ime.as_ref().and_then(|ime| ime.reset_request) {
+                self.0.lock().unwrap().push(id);
+            }
+        }
+    }
+    let mut d = Driver::new();
+    let clip = new_text_layer(&mut d, None, "alpha", 500.0);
+    d.ok("ui.set", json!({"gfxEdit": {"clip": clip, "layer": 0, "caret": 5, "anchor": 5}}));
+    d.frames(2);
+    d.harness.input_mut().events.push(ime_preedit("に"));
+    d.frames(1);
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    d.harness.ctx.add_plugin(OutputWitness(Arc::clone(&observed)));
+    let phase = Arc::new(AtomicUsize::new(0));
+    let begin_phase = Arc::clone(&phase);
+    let stock = egui::Id::unique("film-reset-missing-custom-geometry");
+    d.harness.ctx.on_begin_pass(
+        "Film reset discarded second-pass absence",
+        Arc::new(move |ui| {
+            if begin_phase.load(Ordering::Relaxed) == 1 {
+                ui.memory_mut(|memory| memory.request_focus(stock));
+                begin_phase.store(2, Ordering::Relaxed);
+            }
+        }),
+    );
+    d.harness.ctx.on_end_pass(
+        "Film reset discard first request output",
+        Arc::new(move |ui| {
+            if phase.compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+                ui.ctx().request_discard("exercise actual request consumption followed by final None");
+            }
+        }),
+    );
+    d.harness.input_mut().events.push(key_press(egui::Key::Home));
+    d.frames(1);
+    assert!(d.harness.output().platform_output.num_completed_passes >= 2);
+    assert!(d.ime().is_none(), "the final discarded rerun published no custom descriptor");
+    let first = *observed.lock().unwrap().last().expect("the first discarded pass carried an actual request");
+    assert_eq!(d.harness.state().ui.gfx_edit.as_ref().map(|e| (e.caret, e.anchor)), Some((0, 0)));
+    d.harness.ctx.memory_mut(|memory| memory.surrender_focus(stock));
+    d.frames(1);
+    let current = *d.reset_requests.last().expect("returning custom output rearms");
+    assert_ne!(first, current);
+    d.harness.input_mut().events.extend([
+        egui::Event::ImeResetCompleted { request_id: first },
+        ime_commit("old"),
+        egui::Event::ImeResetCompleted { request_id: current },
+        ime_preedit("が"),
+        ime_commit("が"),
+    ]);
+    d.frames(1);
+    assert_eq!(layer_texts(&mut d, clip), vec!["がalpha".to_owned()]);
+}
+
+/// The ordinary multipass case: the first pass's request is discarded, but the final rerun
+/// publishes the same custom editor. Core must carry R1 (not a newly allocated token or an
+/// untokened interrupt), and that exact fence then admits a fresh suffix without an old terminal.
+#[test]
+fn ime_reset_discarded_pass_keeps_the_same_custom_request_and_admits_a_fresh_suffix() {
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+    struct OutputWitness(Arc<Mutex<Vec<(egui::ImeResetId, bool)>>>);
+    impl egui::Plugin for OutputWitness {
+        fn debug_name(&self) -> &'static str {
+            "Film reset carried-request witness"
+        }
+        fn output_hook(&mut self, _ctx: &egui::Context, output: &mut egui::FullOutput) {
+            if let Some(ime) = output.platform_output.ime.as_ref()
+                && let Some(id) = ime.reset_request
+            {
+                self.0.lock().unwrap().push((id, ime.should_interrupt_composition));
+            }
+        }
+    }
+    let mut d = Driver::new();
+    let clip = new_text_layer(&mut d, None, "alpha", 500.0);
+    d.ok("ui.set", json!({"gfxEdit": {"clip": clip, "layer": 0, "caret": 5, "anchor": 5}}));
+    d.frames(2);
+    d.harness.input_mut().events.push(ime_preedit("に"));
+    d.frames(1);
+    let owner = d.ime().expect("the custom editor published its descriptor").owner;
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    d.harness.ctx.add_plugin(OutputWitness(Arc::clone(&observed)));
+    let phase = Arc::new(AtomicUsize::new(0));
+    let end_phase = Arc::clone(&phase);
+    d.harness.ctx.on_end_pass(
+        "Film reset discard one same-custom pass",
+        Arc::new(move |ui| {
+            if end_phase.compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+                ui.ctx().request_discard("exercise request carry into a same-custom final pass");
+            }
+        }),
+    );
+    d.harness.input_mut().events.push(key_press(egui::Key::Home));
+    d.frames(1);
+    assert!(d.harness.output().platform_output.num_completed_passes >= 2);
+    let ime = d.ime().expect("the final custom descriptor was published");
+    assert_eq!(ime.owner, owner, "the final descriptor is the same custom editor");
+    let id = ime.reset_request.expect("the final custom descriptor carries R1");
+    assert!(ime.should_interrupt_composition);
+    let seen = observed.lock().unwrap();
+    // `output_hook` runs per pass, before core applies the discarded-pass carry in
+    // `FullOutput::append`. Only the discarded pass publishes R1 here; the final rerun's own
+    // pass output has no request, and the combined output above proves the carry.
+    assert_eq!(seen.as_slice(), &[(id, true)], "exactly the discarded pass emitted R1 as a real interruption");
+    drop(seen);
+    // No fabricated old terminal: only the exact completion boundary and a fresh composition.
+    d.harness.input_mut().events.extend([egui::Event::ImeResetCompleted { request_id: id }, ime_preedit("が"), ime_commit("が")]);
+    d.frames(1);
+    assert_eq!(layer_texts(&mut d, clip), vec!["がalpha".to_owned()]);
+}
+
+/// A host picker and an in-app modal own input. Entering either must retire/suspend the guard
+/// without allocating a NEW request; leaving it rearms exactly one fresh boundary.
+#[test]
+fn ime_reset_native_picker_and_in_app_modal_do_not_allocate_a_new_request() {
+    use filmcraft_ui_egui::Dialog;
+    use filmcraft_ui_egui::native_dialogs::FileDialog;
+    use std::sync::{Arc, Mutex};
+    let senders: Arc<Mutex<Vec<Sender<Vec<String>>>>> = Arc::new(Mutex::new(Vec::new()));
+    let picker_senders = Arc::clone(&senders);
+    let mut d = Driver::new_with(move |app| {
+        app.hooks.run_dialog = Some(Box::new(move |_dialog| {
+            let (tx, rx) = channel();
+            picker_senders.lock().unwrap().push(tx);
+            rx
+        }));
+    });
+    let clip = new_text_layer(&mut d, None, "alpha", 500.0);
+    d.ok("ui.set", json!({"gfxEdit": {"clip": clip, "layer": 0, "caret": 5, "anchor": 5}}));
+    d.frames(2);
+    d.harness.input_mut().events.push(ime_preedit("に"));
+    d.frames(1);
+    d.harness.input_mut().events.push(key_press(egui::Key::Home));
+    d.frames(1);
+    let first = *d.reset_requests.last().expect("the interruption published a fence");
+
+    let opened = d.harness.state_mut().pick(FileDialog::OpenProject, |_, _| Ok(Value::Null)).unwrap();
+    assert_eq!(opened["dialog"], json!("open"));
+    d.frames(3);
+    assert!(d.harness.state().native_dialog_open());
+    let requests = d.reset_requests.len();
+    assert!(d.ime().is_none_or(|ime| ime.reset_request.is_none()), "an open picker cannot publish a NEW reset");
+    assert_eq!(d.reset_requests.len(), requests, "an open picker cannot allocate a NEW reset");
+    d.harness.input_mut().events.extend([ime_preedit("old"), ime_commit("old")]);
+    d.frames(2);
+    assert_eq!(d.reset_requests.len(), requests);
+    assert_eq!(layer_texts(&mut d, clip), vec!["alpha".to_owned()], "picker-owned input cannot edit the editor");
+    if let Some(tx) = senders.lock().unwrap().pop() {
+        tx.send(Vec::new()).unwrap();
+    }
+    d.frames(2);
+    assert!(!d.harness.state().native_dialog_open());
+    let after_picker = *d.reset_requests.last().expect("returning from the picker rearms");
+    assert_ne!(after_picker, first);
+    let request_count = d.reset_requests.len();
+    d.frames(3);
+    assert_eq!(d.reset_requests.len(), request_count, "waiting after rearm must not churn IDs");
+
+    d.harness.state_mut().dialog = Some(Dialog::About);
+    d.frames(3);
+    assert_eq!(d.reset_requests.len(), request_count, "an in-app modal cannot allocate a NEW reset");
+    d.harness.state_mut().dialog = None;
+    d.frames(2);
+    let latest = *d.reset_requests.last().expect("leaving the in-app modal rearms");
+    assert_ne!(latest, after_picker);
+    d.harness.input_mut().events.extend([
+        egui::Event::ImeResetCompleted { request_id: after_picker },
+        ime_commit("old"),
+        egui::Event::ImeResetCompleted { request_id: latest },
+        ime_preedit("が"),
+        ime_commit("が"),
+    ]);
+    d.frames(1);
+    assert_eq!(layer_texts(&mut d, clip), vec!["がalpha".to_owned()]);
+}
+
+#[test]
+fn ime_reset_pointer_and_escape_suffix_controls_cannot_edit_the_abandoned_target() {
+    for escape in [false, true] {
+        let mut d = Driver::new();
+        let clip = new_text_layer(&mut d, None, "alpha", 500.0);
+        d.ok("ui.set", json!({"gfxEdit": {"clip": clip, "layer": 0, "caret": 5, "anchor": 5}}));
+        d.frames(2);
+        d.harness.input_mut().events.push(ime_preedit("に"));
+        d.frames(1);
+        d.harness.input_mut().events.push(key_press(egui::Key::Home));
+        d.frames(1);
+        let old = *d.reset_requests.last().unwrap();
+        let boundary = if escape {
+            key_press(egui::Key::Escape)
+        } else {
+            egui::Event::PointerButton { pos: egui::pos2(-20.0, -20.0), button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }
+        };
+        let undo = d.harness.state().session.history.undo.len();
+        d.harness.input_mut().events.extend([
+            ime_commit("old prefix"),
+            egui::Event::ImeResetCompleted { request_id: old },
+            boundary,
+            egui::Event::Text("wrong caret".into()),
+            egui::Event::Paste("wrong paste".into()),
+            egui::Event::Cut,
+            egui::Event::ImeResetCompleted { request_id: old },
+            ime_preedit("が"),
+            ime_commit("が"),
+        ]);
+        d.frames(1);
+        assert_eq!(layer_texts(&mut d, clip), vec!["alpha".to_owned()]);
+        assert_eq!(d.harness.state().session.history.undo.len(), undo);
+        if escape {
+            assert!(d.harness.state().ui.gfx_edit.is_none());
+            d.ok("ui.set", json!({"gfxEdit": {"clip": clip, "layer": 0, "caret": 0, "anchor": 0}}));
+        } else {
+            d.harness.input_mut().events.push(egui::Event::PointerButton {
+                pos: egui::pos2(-20.0, -20.0),
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        d.frames(2);
+        let current = *d.reset_requests.last().unwrap();
+        assert_ne!(old, current);
+        d.harness.input_mut().events.extend([
+            egui::Event::ImeResetCompleted { request_id: old },
+            ime_commit("old suffix"),
+            egui::Event::ImeResetCompleted { request_id: current },
+            ime_preedit("が"),
+            ime_commit("が"),
+        ]);
+        d.frames(1);
+        assert_eq!(layer_texts(&mut d, clip), vec!["がalpha".to_owned()]);
+    }
+}
+
+#[test]
+fn ime_reset_stock_text_edit_keeps_its_output_and_custom_return_gets_a_new_fence() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    struct StockField {
+        enabled: Arc<AtomicBool>,
+        text: String,
+        id: egui::Id,
+    }
+    impl egui::Plugin for StockField {
+        fn debug_name(&self) -> &'static str {
+            "Film reset stock-field control"
+        }
+        fn on_begin_pass(&mut self, ui: &mut egui::Ui) {
+            if self.enabled.load(Ordering::Relaxed) {
+                ui.memory_mut(|memory| memory.request_focus(self.id));
+                ui.add(egui::TextEdit::singleline(&mut self.text).id(self.id));
+            }
+        }
+    }
+    let mut d = Driver::new();
+    let clip = new_text_layer(&mut d, None, "alpha", 500.0);
+    d.ok("ui.set", json!({"gfxEdit": {"clip": clip, "layer": 0, "caret": 5, "anchor": 5}}));
+    d.frames(2);
+    let owner = d.ime().unwrap().owner;
+    d.harness.input_mut().events.push(ime_preedit("に"));
+    d.frames(1);
+    d.harness.input_mut().events.push(key_press(egui::Key::Home));
+    d.frames(1);
+    let first = *d.reset_requests.last().unwrap();
+    let edit = d.harness.state().ui.gfx_edit.clone();
+    let enabled = Arc::new(AtomicBool::new(true));
+    let id = egui::Id::unique("film-reset-stock-text-field");
+    d.harness.ctx.add_plugin(StockField { enabled: Arc::clone(&enabled), text: String::new(), id });
+    d.harness.input_mut().events.extend([egui::Event::ImeResetCompleted { request_id: first }, egui::Event::Text("stock".into())]);
+    d.frames(1);
+    let stock = d.ime().expect("the actual stock TextEdit retains its descriptor");
+    assert_ne!(stock.owner, owner);
+    assert!(stock.reset_request.is_none(), "a previously dispatched custom request cannot cause a NEW stock request");
+    assert_eq!(ime_payload(&stock).text, "stock");
+    assert_eq!(d.harness.state().ui.gfx_edit, edit);
+    assert_eq!(layer_texts(&mut d, clip), vec!["alpha".to_owned()]);
+    enabled.store(false, Ordering::Relaxed);
+    d.harness.ctx.memory_mut(|memory| memory.surrender_focus(id));
+    d.frames(2);
+    let current = *d.reset_requests.last().unwrap();
+    assert_ne!(current, first);
+    assert_eq!(d.ime().unwrap().owner, owner);
+    d.harness.input_mut().events.extend([
+        egui::Event::ImeResetCompleted { request_id: first },
+        ime_commit("old"),
+        egui::Event::ImeResetCompleted { request_id: current },
+        ime_preedit("が"),
+        ime_commit("が"),
+    ]);
+    d.frames(1);
+    assert_eq!(layer_texts(&mut d, clip), vec!["がalpha".to_owned()]);
 }
 
 /// The concrete collision the uid-less fingerprint missed: two layers with identical static

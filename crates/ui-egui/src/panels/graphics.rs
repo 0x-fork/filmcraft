@@ -1086,9 +1086,13 @@ pub(crate) fn finish_graphics_ime(app: &mut FilmcraftApp, ctx: &egui::Context) -
         return false;
     }
     app.note_ime_observed(viewport, pass_nr);
-    let should_interrupt_composition = app.ime_interrupt_now;
-    if !ctx.will_discard() {
-        app.ime_interrupt_now = false;
+    if app.ime_modal_blocks_input() {
+        // A picker or in-app modal opened after the overlay drew owns input for the rest of this
+        // pass. Publish no custom descriptor, so this editor cannot attach an already queued reset
+        // under the modal. Core may still carry that un-taken request to a later stock descriptor
+        // (the accepted attachment limitation); the next eligible pass rearms this guard explicitly.
+        app.ime_context.observe(viewport, None);
+        return true;
     }
     if drawn.document_epoch != app.session.document_epoch || drawn.sequence != app.session.state.active_sequence.map(|sequence| sequence.0) {
         app.ime_context.observe(viewport, None);
@@ -1134,9 +1138,6 @@ pub(crate) fn finish_graphics_ime(app: &mut FilmcraftApp, ctx: &egui::Context) -
         // belongs to the text that was replaced, so its next delete/preedit/commit must not be
         // inserted into the new text.
         app.invalidate_ime_composition();
-        if !ctx.will_discard() {
-            app.ime_interrupt_now = false;
-        }
         app.ime_context.observe(viewport, None);
         return true;
     }
@@ -1164,6 +1165,7 @@ pub(crate) fn finish_graphics_ime(app: &mut FilmcraftApp, ctx: &egui::Context) -
 
     if let Some(update) = update {
         let (rect, cursor_rect) = (drawn.rect, drawn.cursor_rect);
+        app.ime_reset.produced(crate::ime_reset::OutputContext { owner: update.owner, generation: update.context_generation, purpose: update.purpose });
         ctx.output_mut(|o| {
             o.ime = Some(egui::output::IMEOutput {
                 owner: update.owner,
@@ -1171,7 +1173,8 @@ pub(crate) fn finish_graphics_ime(app: &mut FilmcraftApp, ctx: &egui::Context) -
                 purpose: update.purpose,
                 rect,
                 cursor_rect,
-                should_interrupt_composition,
+                should_interrupt_composition: false, // core attaches the one-shot request/interrupt
+                reset_request: None,
                 change_cause: update.change_cause,
                 surrounding_text: update.surrounding_text,
             })
@@ -1585,6 +1588,18 @@ fn current_graphics_ime_target(app: &FilmcraftApp, clip: u64, layer: usize) -> O
     Some(graphics_ime_target(sequence, clip, layer, uid, app.ime_replacement_epoch))
 }
 
+/// Outside the keyboard reducer the actual engine/UI edit state is authoritative.
+pub(crate) fn current_reset_destination(app: &FilmcraftApp) -> Option<crate::ime_reset::Destination> {
+    let ed = app.ui.gfx_edit.as_ref()?;
+    let target = current_graphics_ime_target(app, ed.clip, ed.layer)?;
+    let text = current_layer_text(&app.session, ed.clip, ed.layer)?;
+    Some(local_reset_destination(app, ed, text, target))
+}
+
+fn local_reset_destination(app: &FilmcraftApp, ed: &GfxEdit, text: &str, target: ImeTarget) -> crate::ime_reset::Destination {
+    crate::ime_reset::Destination { document: app.session.document_epoch, target, caret: ed.caret, anchor: ed.anchor, text: ime_text_stamp(text) }
+}
+
 /// Is this IME commit/delete left over from a composition whose target or caret/focus was
 /// interrupted? A terminal-pending composition still owns its pending commit/delete after an empty
 /// preedit. `None` (no preedit was seen) still accepts a direct commit.
@@ -1607,6 +1622,11 @@ fn text_edit(
     pending_ime: &mut Option<PendingImeEdit>,
 ) {
     let _ = resp;
+    let window_focused = ui.input(|input| input.viewport().focused.unwrap_or(input.focused));
+    if !window_focused || app.ime_modal_blocks_input() || !ui.is_enabled() {
+        app.suspended_ime_controls(ui.ctx());
+        return;
+    }
     // moving to another panel ends the edit; Properties and Essential Graphics style the text
     // being edited, so working there keeps it (#683). Only a move counts: an edit started with
     // another panel focused (an agent's `ui.set`) goes on until the focus moves.
@@ -1616,6 +1636,7 @@ fn text_edit(
     ui.data_mut(|d| d.insert_temp(panel_id, app.ui.focused));
     if before.is_some_and(|b| b != app.ui.focused) && !matches!(app.ui.focused, PanelKind::Program | PanelKind::Properties | PanelKind::EssentialGraphics) {
         end_edit(app, ui);
+        app.suspended_ime_controls(ui.ctx());
         return;
     }
     let eid = egui::Id::unique(TEXT_EDIT_ID);
@@ -1625,14 +1646,17 @@ fn text_edit(
     // while another field has the keyboard (a value typed in Properties) the keys are its own;
     // the text takes the keyboard back once nothing has it (#683)
     if ui.memory(|m| m.focused().is_some_and(|f| f != eid)) {
-        app.invalidate_ime_composition();
+        app.suspended_ime_controls(ui.ctx());
         return;
     }
     ui.memory_mut(|m| {
         m.request_focus(eid);
         m.set_focus_lock_filter(eid, egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true });
     });
-    let Some(tp) = text_of(&v.spec) else { return };
+    let Some(tp) = text_of(&v.spec) else {
+        app.suspended_ime_controls(ui.ctx());
+        return;
+    };
     let mut text = tp.text.clone();
     // `ui.set.gfxEdit` accepts arbitrary byte offsets. Clamp both ends to UTF-8 boundaries here,
     // before any slice/replace_range/insert_str, so hostile offsets can never panic the editor.
@@ -1644,15 +1668,8 @@ fn text_edit(
     let mut changed = false;
     let mut stop = false;
     let mut application_mutation = false;
-    // A stale event was rejected in this raw input batch. A rejected commit is the composition's
-    // terminal boundary: consume the tombstone immediately, so a preedit later in the same raw
-    // batch starts a new composition. A stale empty preedit or delete is only tentatively
-    // terminal: keep the tombstone through the batch so its paired old commit is rejected too,
-    // then clear it at batch end when no commit followed. A lone non-empty preedit is only an
-    // update of the old composition: keep the tombstone across batches so its later commit is
-    // still dropped.
-    let mut stale_batch = false;
-    let mut stale_preedit_only = false;
+    // A break becomes an ordered controls-only suffix, never a marker pre-scan.
+    let mut custom_mutations = true;
     let mut ime_before: Option<(usize, usize)> = None;
     let mut ime_after: Vec<ImeMutationStamp> = Vec::new();
     let sel = |ed: &GfxEdit| (ed.caret.min(ed.anchor), ed.caret.max(ed.anchor));
@@ -1666,31 +1683,28 @@ fn text_edit(
         ed.anchor = a;
         true
     };
-    'events: for ev in events {
+    for ev in events {
+        let destination = local_reset_destination(app, &ed, &text, composition_target);
+        if custom_mutations {
+            app.sync_live_ime_destination(ui.ctx(), destination);
+        }
+        if let egui::Event::ImeResetCompleted { request_id } = ev {
+            if custom_mutations && app.ime_reset.complete(ui.ctx(), request_id, destination) && app.ime_composition_viewport == Some(ui.ctx().viewport_id()) {
+                app.ime_composition = None;
+                app.ime_composition_viewport = None;
+            }
+            continue;
+        }
+        if !custom_mutations || (app.ime_reset.blocked(ui.ctx().viewport_id()) && matches!(&ev, egui::Event::Ime(_))) {
+            continue;
+        }
+        let from_ime = matches!(&ev, egui::Event::Ime(_));
+        let terminal = matches!(&ev, egui::Event::Ime(egui::ImeEvent::Commit(_)));
         match ev {
-            // The platform IME owns a composition between a non-empty preedit and its terminal
-            // commit; an empty preedit leaves that terminal event pending. Remember which target
-            // it belongs to; an event after the target was replaced must not edit the new layer.
             egui::Event::Ime(egui::ImeEvent::Preedit { text, .. }) => {
+                app.ime_composition_viewport = Some(ui.ctx().viewport_id());
                 if text.is_empty() {
-                    // Dismissing a pre-edit clears the visible composition, but its terminal
-                    // commit/delete may arrive in a later event. Keep the owner as
-                    // terminal-pending so a target switch still rejects that event. A stale
-                    // empty preedit must not lift the tombstone before a paired old commit.
-                    if matches!(app.ime_composition, Some(crate::ImeComposition::Stale)) {
-                        stale_batch = true;
-                        stale_preedit_only = false;
-                    } else {
-                        app.ime_composition = Some(crate::ImeComposition::TerminalPending(composition_target));
-                    }
-                } else if matches!(app.ime_composition, Some(crate::ImeComposition::Stale)) {
-                    // This pre-edit belongs to the composition whose target was replaced: an
-                    // input method can emit further non-empty pre-edits before its final
-                    // commit. Do not revive the old composition on the replacement target.
-                    // Keep the tombstone past this batch: the old composition may commit in a
-                    // later raw batch; a later empty preedit, delete or commit ends it.
-                    stale_batch = true;
-                    stale_preedit_only = true;
+                    app.ime_composition = Some(crate::ImeComposition::TerminalPending(composition_target));
                 } else {
                     app.ime_composition = Some(crate::ImeComposition::Active(composition_target));
                 }
@@ -1701,9 +1715,6 @@ fn text_edit(
             // accent or the letter next to an emoji is preserved.
             egui::Event::Ime(egui::ImeEvent::DeleteSurroundingBytes { before_bytes, after_bytes }) => {
                 if ime_event_is_stale(app, composition_target) {
-                    // Keep the tombstone for the commit paired with this delete.
-                    stale_batch = true;
-                    stale_preedit_only = false;
                     continue;
                 }
                 let (a, b) = sel(&ed);
@@ -1718,8 +1729,6 @@ fn text_edit(
             }
             egui::Event::Ime(egui::ImeEvent::DeleteSurrounding { before_chars, after_chars }) => {
                 if ime_event_is_stale(app, composition_target) {
-                    stale_batch = true;
-                    stale_preedit_only = false;
                     continue;
                 }
                 let (a, b) = sel(&ed);
@@ -1749,15 +1758,10 @@ fn text_edit(
             // an input method (Chinese, Japanese, Korean) hands over its finished text as a commit (#1083)
             egui::Event::Ime(egui::ImeEvent::Commit(s)) => {
                 if ime_event_is_stale(app, composition_target) {
-                    // A commit is the composition's terminal boundary. Consume the tombstone now,
-                    // so a preedit later in this same raw batch starts a new composition. The
-                    // earlier empty preedit/delete already rejected the old composition's edits.
-                    app.ime_composition = None;
-                    stale_batch = true;
-                    stale_preedit_only = false;
                     continue;
                 }
                 app.ime_composition = None;
+                app.ime_composition_viewport = None;
                 let s: String = s.chars().filter(|c| !c.is_control() || *c == '\n').collect();
                 let (before_caret, before_anchor) = (ed.caret, ed.anchor);
                 if s.is_empty() {
@@ -1769,15 +1773,15 @@ fn text_edit(
                         ime_after.push(ime_stamp(&text, ed.caret, ed.anchor));
                         changed = true;
                     }
-                    continue;
+                } else {
+                    delete_sel(&mut text, &mut ed);
+                    text.insert_str(ed.caret, &s);
+                    ed.caret += s.len();
+                    ed.anchor = ed.caret;
+                    ime_before.get_or_insert((before_caret, before_anchor));
+                    ime_after.push(ime_stamp(&text, ed.caret, ed.anchor));
+                    changed = true;
                 }
-                delete_sel(&mut text, &mut ed);
-                text.insert_str(ed.caret, &s);
-                ed.caret += s.len();
-                ed.anchor = ed.caret;
-                ime_before.get_or_insert((before_caret, before_anchor));
-                ime_after.push(ime_stamp(&text, ed.caret, ed.anchor));
-                changed = true;
             }
             egui::Event::Copy | egui::Event::Cut => {
                 let (a, b) = sel(&ed);
@@ -1797,7 +1801,9 @@ fn text_edit(
                         // Escape cancels the edit now: a commit later in the same raw batch must
                         // not still be inserted after the user cancelled.
                         stop = true;
-                        break 'events;
+                        custom_mutations = false;
+                        app.suspend_ime_input(ui.ctx());
+                        continue;
                     }
                     egui::Key::Enter => {
                         delete_sel(&mut text, &mut ed);
@@ -1892,22 +1898,21 @@ fn text_edit(
             // A pointer press is handled later in this pass (caret placement, another layer, or
             // ending the edit). Events after it in the same raw batch belong to the new target
             // and must not be applied to the old one.
-            egui::Event::PointerButton { pressed: true, .. } => break 'events,
-            _ => {}
-        }
-    }
-    if stale_batch {
-        // A tentatively terminal empty preedit/delete with no following commit ended the rejected
-        // composition: clear the tombstone so a later composition on the replacement target is
-        // accepted. A lone non-empty preedit keeps it for that composition's later commit. An
-        // active or terminal-pending composition recorded for another target is equally stale; a
-        // fresh pre-edit on this target is kept.
-        match app.ime_composition {
-            Some(crate::ImeComposition::Stale) if !stale_preedit_only => app.ime_composition = None,
-            Some(crate::ImeComposition::Active(active) | crate::ImeComposition::TerminalPending(active)) if active != composition_target => {
-                app.ime_composition = None;
+            egui::Event::PointerButton { pressed: true, .. } => {
+                custom_mutations = false;
+                app.suspend_ime_input(ui.ctx());
             }
             _ => {}
+        }
+        let current = local_reset_destination(app, &ed, &text, composition_target);
+        if from_ime {
+            if terminal {
+                app.ime_reset.terminal(ui.ctx().viewport_id());
+            } else {
+                app.ime_reset.remember(ui.ctx().viewport_id(), current);
+            }
+        } else if custom_mutations {
+            app.sync_live_ime_destination(ui.ctx(), current);
         }
     }
     if changed && text != tp.text {

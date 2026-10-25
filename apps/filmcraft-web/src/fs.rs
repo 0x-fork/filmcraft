@@ -424,12 +424,12 @@ impl Services for WebServices {
     }
 }
 
-/// Offer bytes as a browser download named `name`. Downloads are clicked at least
-/// [`crate::download_pacing::GAP_MS`] apart: Chrome drops a burst of them (#378).
 thread_local! {
     static DOWNLOAD_CLOCK: web_time::Instant = web_time::Instant::now();
 }
 
+/// Offer bytes as a browser download named `name`. Downloads are clicked at least
+/// [`crate::download_pacing::GAP_MS`] apart: Chrome drops a burst of them (#378).
 pub fn download(name: &str, data: &[u8]) -> Result<(), wasm_bindgen::JsValue> {
     let doc = web_sys::window().and_then(|w| w.document()).ok_or("no document")?;
     let blob = bytes_to_blob(data, "application/octet-stream")?;

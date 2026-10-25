@@ -48,6 +48,7 @@ pub mod graphics_notice;
 pub mod header;
 pub mod i18n;
 pub mod icons;
+mod ime_reset;
 pub mod links;
 pub mod menus;
 pub mod native_dialogs;
@@ -279,23 +280,9 @@ pub(crate) const EXPORT_SAVE_DIALOGS: [(&str, &str, &str); 7] = [
     ("file.exportSelectionProject", "FilmCraft Project", "fcproj"),
 ];
 
-/// The IME composition currently in flight on the Program monitor.
-///
-/// `TerminalPending` is an observed empty preedit: the input method cleared the visible
-/// composition, but its terminal commit/delete is a separate event and may still arrive. Keeping
-/// the owner means a target switch turns that state into `Stale`, so the pending old terminal
-/// event is rejected instead of being applied to the replacement.
-///
-/// `Stale` is a tombstone: the target was replaced or the editor closed while a composition was
-/// active, so the preedit/delete/commit events of that composition are dropped instead of being
-/// inserted into the replacement target. A rejected commit consumes it immediately, so a preedit
-/// later in the same raw batch starts a new composition for the current target. A rejected empty
-/// preedit or delete is only tentatively terminal: it keeps the tombstone through the rest of the
-/// batch so its paired old commit is rejected too, and the tombstone is consumed at batch end when
-/// no commit follows. A lone non-empty preedit keeps it across batches until the rejected
-/// composition's commit, so a preedit/commit split across frames cannot retarget either. A later
-/// composition on the new target is legitimate and must be accepted, so the tombstone is never
-/// permanent (see `panels::graphics::text_edit`).
+/// Incoming composition identity for the Program monitor. Interrupted compositions remain
+/// Stale until the matching opaque native reset fence; output or old terminal input is not
+/// acknowledgement. The retired origin and current destination live in the UI reset adapter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ImeComposition {
     Active(ImeTarget),
@@ -331,9 +318,8 @@ pub struct FilmcraftApp {
     /// The composition in flight (including an empty preedit awaiting its terminal event), or a
     /// tombstone for a composition whose target was replaced or caret/focus was interrupted.
     pub(crate) ime_composition: Option<ImeComposition>,
-    /// A known composition was interrupted locally; ask the platform to cancel it once even
-    /// when the same editor owner/generation remains focused after a caret-only move.
-    pub(crate) ime_interrupt_now: bool,
+    ime_reset: ime_reset::State,
+    ime_composition_viewport: Option<egui::ViewportId>,
     /// The editor drawn in this pass; the final observation runs after control drain.
     pub(crate) ime_drawn_editor: Option<panels::graphics::DrawnImeEditor>,
     /// Project document generation last seen by the UI (the engine bumps it on replacement).
@@ -645,7 +631,8 @@ impl FilmcraftApp {
             ime_replacement_epoch: 0,
             ime_observed_pass: None,
             ime_composition: None,
-            ime_interrupt_now: false,
+            ime_reset: Default::default(),
+            ime_composition_viewport: None,
             ime_drawn_editor: None,
             ime_document_epoch,
             ime_active_sequence,
@@ -731,16 +718,92 @@ impl FilmcraftApp {
         self.invalidate_ime_composition();
     }
 
-    /// Remember that the in-flight composition's target no longer applies. This includes an empty
-    /// preedit whose terminal commit/delete has not arrived yet. The next late commit or delete
-    /// from it is dropped; a rejected commit is a terminal boundary, so a fresh preedit after it
-    /// starts a new composition. A tentative boundary (empty preedit/delete) keeps the tombstone
-    /// through its raw input batch, so the paired old commit is rejected too.
+    /// Context-less commands block immediately and retire the prior request on a real change.
+    /// The next Context-bearing local event boundary requests its current destination's fence.
     pub(crate) fn invalidate_ime_composition(&mut self) {
-        if matches!(self.ime_composition, Some(ImeComposition::Active(_) | ImeComposition::TerminalPending(_))) {
-            self.ime_composition = Some(ImeComposition::Stale);
-            self.ime_interrupt_now = true;
+        let origin = match self.ime_composition {
+            Some(ImeComposition::Active(target) | ImeComposition::TerminalPending(target))
+                if self.ime_composition_viewport == Some(self.ime_reset.viewport) =>
+            {
+                Some(target)
+            }
+            _ => self.ime_reset.origin(self.ime_reset.viewport),
+        };
+        let Some(origin) = origin else { return };
+        let destination = panels::graphics::current_reset_destination(self);
+        self.ime_reset.interrupt(origin, destination);
+        self.ime_composition = Some(ImeComposition::Stale);
+        self.ime_composition_viewport = Some(self.ime_reset.viewport);
+    }
+
+    pub(crate) fn sync_live_ime_destination(&mut self, ctx: &egui::Context, destination: ime_reset::Destination) {
+        let viewport = ctx.viewport_id();
+        self.ime_reset.viewport = viewport;
+        if self.ime_reset.incoming_changed(viewport, destination) {
+            let origin = match self.ime_composition {
+                Some(ImeComposition::Active(target) | ImeComposition::TerminalPending(target)) if self.ime_composition_viewport == Some(viewport) => {
+                    Some(target)
+                }
+                _ => self.ime_reset.origin(viewport),
+            };
+            if let Some(origin) = origin {
+                self.ime_reset.interrupt(origin, Some(destination));
+                self.ime_composition = Some(ImeComposition::Stale);
+                self.ime_composition_viewport = Some(viewport);
+            }
         }
+        self.ime_reset.sync(ctx, destination);
+    }
+
+    pub(crate) fn suspend_ime_input(&mut self, ctx: &egui::Context) {
+        self.ime_reset.viewport = ctx.viewport_id();
+        self.invalidate_ime_composition();
+        self.ime_reset.suspend(ctx.viewport_id());
+    }
+
+    /// The editor did not own this raw route. Controls stay inert after suspension; stock
+    /// text/key events remain available to their widgets. Never use this before a live loop.
+    fn suspended_ime_controls(&mut self, ctx: &egui::Context) {
+        self.suspend_ime_input(ctx);
+        ctx.input_mut(|input| input.events.retain(|event| !matches!(event, egui::Event::ImeResetCompleted { .. })));
+    }
+
+    /// An actual modal owns input: the in-app `dialog` (Recovery, Revert, About, …) or a
+    /// host-shown `native_dialog` picker. `file_dialogs` is only dialog-local state (the recovery
+    /// choice); it is not an open modal on its own, so it must not block an otherwise eligible
+    /// editor between frames.
+    pub(crate) fn ime_modal_blocks_input(&self) -> bool {
+        self.dialog.is_some() || self.native_dialog_open()
+    }
+
+    /// Hosts with post-logic application work call this at their actual outer return.
+    pub fn finish_ime_reset_logic(&mut self, ctx: &egui::Context) {
+        self.ime_reset.viewport = ctx.viewport_id();
+        self.sync_ime_target_context(ctx);
+        if !ime_reset::in_ui_pass(ctx) {
+            self.suspend_ime_input(ctx);
+        }
+    }
+
+    fn finish_ime_reset_ui(&mut self, ctx: &egui::Context) {
+        let focused = ctx.input(|input| input.viewport().focused.unwrap_or(input.focused));
+        let eligible = self.ime_reset.owns_output(ctx)
+            && focused
+            && !self.ime_modal_blocks_input()
+            && ctx.memory(|memory| memory.has_focus(egui::Id::unique(panels::graphics::TEXT_EDIT_ID)));
+        if !eligible {
+            self.suspend_ime_input(ctx);
+            let destination = panels::graphics::current_reset_destination(self);
+            self.ime_reset.finish(ctx, destination, false);
+            return;
+        }
+        let destination = panels::graphics::current_reset_destination(self);
+        if let Some(destination) = destination {
+            // Same-pass control work can change only the caret after the overlay drew. Do
+            // not allocate until actual custom eligibility has been established above.
+            self.sync_live_ime_destination(ctx, destination);
+        }
+        self.ime_reset.finish(ctx, destination, self.ime_reset.owns_output(ctx));
     }
 
     /// Notice a document replacement or an active-sequence change that did not emit
@@ -787,11 +850,7 @@ impl FilmcraftApp {
         if self.ime_observed_pass == Some((viewport, pass_nr)) {
             return;
         }
-        // No custom descriptor already disables its platform context; do not carry a stale
-        // one-shot interruption into a later fresh focus session.
-        if !ctx.will_discard() {
-            self.ime_interrupt_now = false;
-        }
+        // Availability retirement belongs to the unconditional outer reset finalizer.
         self.ime_context.observe(viewport, None);
         self.note_ime_observed(viewport, pass_nr);
     }
@@ -2243,67 +2302,13 @@ fn synthesize_mac_ctrl_click(armed: &mut bool, raw_input: &mut egui::RawInput) {
     }
 }
 
-impl eframe::App for FilmcraftApp {
-    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-        self.native_window_focused = Some(raw_input.focused);
-        capture::note_raw_geometry(self, ctx, raw_input);
-        #[cfg(target_os = "macos")]
-        if !self.control_input_only {
-            synthesize_mac_ctrl_click(&mut self.mac_ctrl_click_armed, raw_input);
-        }
-        if self.control_input_only {
-            // Screenshot results arrive through `ScreenshotCallback`, not raw input. Preserve all
-            // viewport lifecycle/geometry metadata and drop native input only.
-            raw_input.events.clear();
-            raw_input.hovered_files.clear();
-            raw_input.dropped_files.clear();
-        }
-        if self.control_input_only || !self.synthetic.is_empty() || self.synthetic_pending_step.is_some() {
-            // Native modifiers cannot replace those requested by a control gesture. A queued
-            // reset runs in the frame after release, so clicked() still sees Shift/Alt.
-            if !self.synthetic_modifiers_offered {
-                raw_input.events.push(egui::Event::ModifiersChanged(self.synthetic_modifiers));
-                self.synthetic_modifiers_offered = true;
-            }
-            // Widget keyboard handling requires effective egui focus. Control input must work
-            // in a background window without activating it or taking the user's OS keyboard.
-            raw_input.focused = true;
-        }
-        if self.synthetic_pending_step.is_none() && !self.synthetic.is_empty() {
-            // Pointer events go one per frame so egui sees press → moves → release as a real drag
-            // (all in one frame reads as a click); key/text runs go together up to a key release.
-            let pointer = |e: &egui::Event| matches!(e, egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. } | egui::Event::MouseWheel { .. });
-            let n = if pointer(&self.synthetic[0]) {
-                1
-            } else {
-                self.synthetic
-                    .iter()
-                    .position(|e| pointer(e) || matches!(e, egui::Event::Key { pressed: false, .. }))
-                    .map_or(self.synthetic.len(), |i| if pointer(&self.synthetic[i]) { i.max(1) } else { i + 1 })
-            };
-            let step: Vec<egui::Event> = self.synthetic.drain(..n).collect();
-            for event in &step {
-                if let egui::Event::ModifiersChanged(modifiers) = event {
-                    self.synthetic_modifiers = *modifiers;
-                }
-            }
-            self.synthetic_pending_step = Some(step);
-            self.synthetic_step_offered = false;
-        }
-        if let Some(step) = &self.synthetic_pending_step {
-            // `raw_input_hook` also runs before hidden `run_logic` ticks, whose raw input egui does
-            // not feed to widgets. Keep the exact same one-step batch pending and offer it again
-            // on the next callback; a real UI pass clears it at `ui()` start. Never coalesce a
-            // press with its release and, crucially, never append a step that the integration
-            // already preserved in its pending raw input: the UI pass would then see two copies.
-            if !self.synthetic_step_offered {
-                raw_input.events.extend(step.iter().cloned());
-                self.synthetic_step_offered = true;
-            }
-        }
-    }
+/// Install once in each native/web/harness Context creator, before the first UI pass.
+pub fn install_ime_reset_callbacks(ctx: &egui::Context) {
+    ime_reset::install(ctx);
+}
 
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+impl FilmcraftApp {
+    pub fn logic_inner(&mut self, ctx: &egui::Context) {
         // Remember the pass's clock before anything reads `now()`. A hidden logic-only tick keeps
         // the last UI time (which is stale there), so `now()` never runs behind the host clock.
         self.ui_clock = self.ui_clock.max(ctx.input(|i| i.time));
@@ -2411,19 +2416,7 @@ impl eframe::App for FilmcraftApp {
         capture::request_hidden_paint(self, ctx);
     }
 
-    fn on_exit(&mut self) {
-        // Late screenshot callbacks now find a dropped slot and write nothing; clients get one error.
-        capture::cancel_all(self);
-        for viewport in self.ime_viewports.drain(..) {
-            self.ime_context.end_viewport(viewport);
-        }
-        self.ime_observed_pass = None;
-        // Flush the recovery journal and stop the auto-save worker; a session with nothing unsaved
-        // removes its journal, one with unsaved changes keeps it for the next launch.
-        self.session.shutdown();
-    }
-
-    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+    fn ui_inner(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         if !self.fonts_ready {
             // This pass did not consume the pending synthetic input; the next hook must offer it
             // again (the UI path does not preserve raw input across this early return).
@@ -2505,6 +2498,98 @@ impl eframe::App for FilmcraftApp {
         // Only a real, accepted UI pass may issue a capture: it observes the final layout for this
         // pass and `screenshot` itself forces the paint needed when the window is hidden.
         capture::issue(self, &ctx);
+    }
+}
+
+impl eframe::App for FilmcraftApp {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.native_window_focused = Some(raw_input.focused);
+        capture::note_raw_geometry(self, ctx, raw_input);
+        #[cfg(target_os = "macos")]
+        if !self.control_input_only {
+            synthesize_mac_ctrl_click(&mut self.mac_ctrl_click_armed, raw_input);
+        }
+        if self.control_input_only {
+            // Screenshot results arrive through `ScreenshotCallback`, not raw input. Preserve all
+            // viewport lifecycle/geometry metadata and drop native input only.
+            raw_input.events.clear();
+            raw_input.hovered_files.clear();
+            raw_input.dropped_files.clear();
+        }
+        if self.control_input_only || !self.synthetic.is_empty() || self.synthetic_pending_step.is_some() {
+            // Native modifiers cannot replace those requested by a control gesture. A queued
+            // reset runs in the frame after release, so clicked() still sees Shift/Alt.
+            if !self.synthetic_modifiers_offered {
+                raw_input.events.push(egui::Event::ModifiersChanged(self.synthetic_modifiers));
+                self.synthetic_modifiers_offered = true;
+            }
+            // Widget keyboard handling requires effective egui focus. Control input must work
+            // in a background window without activating it or taking the user's OS keyboard.
+            raw_input.focused = true;
+        }
+        if self.synthetic_pending_step.is_none() && !self.synthetic.is_empty() {
+            // Pointer events go one per frame so egui sees press → moves → release as a real drag
+            // (all in one frame reads as a click); key/text runs go together up to a key release.
+            let pointer = |e: &egui::Event| matches!(e, egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. } | egui::Event::MouseWheel { .. });
+            let n = if pointer(&self.synthetic[0]) {
+                1
+            } else {
+                self.synthetic
+                    .iter()
+                    .position(|e| pointer(e) || matches!(e, egui::Event::Key { pressed: false, .. }))
+                    .map_or(self.synthetic.len(), |i| if pointer(&self.synthetic[i]) { i.max(1) } else { i + 1 })
+            };
+            let step: Vec<egui::Event> = self.synthetic.drain(..n).collect();
+            for event in &step {
+                if let egui::Event::ModifiersChanged(modifiers) = event {
+                    self.synthetic_modifiers = *modifiers;
+                }
+            }
+            self.synthetic_pending_step = Some(step);
+            self.synthetic_step_offered = false;
+        }
+        if let Some(step) = &self.synthetic_pending_step {
+            // `raw_input_hook` also runs before hidden `run_logic` ticks, whose raw input egui does
+            // not feed to widgets. Keep the exact same one-step batch pending and offer it again
+            // on the next callback; a real UI pass clears it at `ui()` start. Never coalesce a
+            // press with its release and, crucially, never append a step that the integration
+            // already preserved in its pending raw input: the UI pass would then see two copies.
+            if !self.synthetic_step_offered {
+                raw_input.events.extend(step.iter().cloned());
+                self.synthetic_step_offered = true;
+            }
+        }
+    }
+
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.logic_inner(ctx);
+        self.finish_ime_reset_logic(ctx);
+    }
+
+    fn on_exit(&mut self) {
+        // Late screenshot callbacks now find a dropped slot and write nothing; clients get one error.
+        capture::cancel_all(self);
+        for viewport in self.ime_viewports.drain(..) {
+            self.ime_context.end_viewport(viewport);
+            self.ime_reset.end_viewport(viewport);
+        }
+        self.ime_observed_pass = None;
+        // Flush the recovery journal and stop the auto-save worker; a session with nothing unsaved
+        // removes its journal, one with unsaved changes keeps it for the next launch.
+        self.session.shutdown();
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        self.ime_reset.begin_pass(&ctx);
+        self.ime_drawn_editor = None;
+        let focused = ctx.input(|input| input.viewport().focused.unwrap_or(input.focused));
+        let another_field = ctx.memory(|memory| memory.focused().is_some_and(|id| id != egui::Id::unique(panels::graphics::TEXT_EDIT_ID)));
+        if !self.fonts_ready || self.ui.gfx_edit.is_none() || self.ime_modal_blocks_input() || !focused || another_field {
+            self.suspended_ime_controls(&ctx);
+        }
+        self.ui_inner(ui, frame);
+        self.finish_ime_reset_ui(&ctx);
     }
 }
 

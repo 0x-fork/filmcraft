@@ -52,6 +52,7 @@
     <?endif ?>
     <ComponentGroup Id="FilmcraftFiles" Directory="INSTALLFOLDER">
       <Component Id="FilmcraftApp" Guid="15933017-925B-4963-8992-52000EB26AAA">
+        <File Id="FilmcraftNotice" Source="$(var.BinDir)\NOTICE" KeyPath="no" />
         <File Id="FilmcraftExe" Source="$(var.BinDir)\filmcraft.exe" KeyPath="yes">
           <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="FilmCraft"
               Description="FilmCraft video editor" WorkingDirectory="INSTALLFOLDER" Advertise="yes"

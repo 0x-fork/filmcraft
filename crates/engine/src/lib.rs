@@ -385,6 +385,10 @@ pub struct EditorState {
     /// Sequence ▸ Show Through Edits: the timeline marks cuts between continuous pieces of a clip.
     #[serde(default)]
     pub show_through_edits: bool,
+    /// Timeline Display Settings ▸ Show Duplicate Frame Markers: a stripe along the bottom of a
+    /// clip under the media frames another clip also shows.
+    #[serde(default)]
+    pub show_duplicate_frame_markers: bool,
     /// Markers ▸ Ripple Sequence Markers: ripple edits move (and delete) sequence markers too.
     #[serde(default)]
     pub ripple_sequence_markers: bool,
@@ -1292,6 +1296,8 @@ mod interchange_auto_points_tests;
 mod keyboard_tests;
 #[cfg(test)]
 mod linked_speed_tests;
+#[cfg(test)]
+mod linked_trim_tests;
 #[cfg(test)]
 mod locked_clip_edits_tests;
 #[cfg(test)]

@@ -305,8 +305,8 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     // overlay, so it leaves graphic layers to it and takes over its click on empty space. Where the
     // marquee started (stored for the gesture, until the button is up) keeps it registered over a
     // layer through the release.
-    let marquee_id = egui::Id::new("mask-marquee");
-    let marquee_from = egui::Id::new("mask-marquee-from");
+    let marquee_id = egui::Id::unique("mask-marquee");
+    let marquee_from = egui::Id::unique("mask-marquee-from");
     let selection_tool = app.ui.tool == crate::state::Tool::Selection;
     if !ui.input(|i| i.pointer.primary_down() || i.pointer.primary_released()) {
         ui.data_mut(|d| d.remove::<Pos2>(marquee_from));

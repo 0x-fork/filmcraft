@@ -1886,7 +1886,10 @@ fn text_edit(
                 }
                 if let Some(m) = moved {
                     let previous_selection = (ed.caret, ed.anchor);
-                    ed.caret = m.min(text.len());
+                    // `m` comes from the layout of the text at the start of this batch, but an
+                    // earlier Text/Paste/IME event may already have changed `text`; clamp to a
+                    // UTF-8 boundary in the current text before a later event slices or inserts.
+                    ed.caret = char_boundary_floor(&text, m);
                     if !shift {
                         ed.anchor = ed.caret;
                     }

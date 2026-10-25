@@ -168,8 +168,9 @@ pub fn effect_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, id
 
             for pd in def.map(|d| d.params.as_slice()).unwrap_or(&[]) {
                 let value = x.effect.params.get(pd.id).map_or(&pd.default, |p| &p.value);
-                ui.label(crate::i18n::t(pd.label));
-                if let Some(v) = param_widget(ui, &mut elems, pd.id, &pd.kind, value, (fw, fh)) {
+                let label = crate::i18n::t(pd.label);
+                ui.label(label);
+                if let Some(v) = param_widget(ui, &mut elems, pd.id, label, &pd.kind, value, (fw, fh)) {
                     changes.push(v);
                 }
                 ui.end_row();
@@ -470,7 +471,7 @@ fn paint_ruler(p: &egui::Painter, ruler: Rect, view: (Tick, Tick), rate: FrameRa
 }
 
 /// One of a transition's own settings. Returns the change, as `sequence.setTransition` params.
-fn param_widget(ui: &mut egui::Ui, elems: &mut Elems, pid: &str, kind: &ParamKind, value: &ParamValue, frame: (f64, f64)) -> Option<Value> {
+fn param_widget(ui: &mut egui::Ui, elems: &mut Elems, pid: &str, label: &str, kind: &ParamKind, value: &ParamValue, frame: (f64, f64)) -> Option<Value> {
     let eid = format!("effectControls.transition.param.{pid}");
     let drag = |r: &egui::Response| json!({"merge": true, "begin": r.drag_started() || !r.dragged()});
     match (kind, value) {
@@ -497,7 +498,7 @@ fn param_widget(ui: &mut egui::Ui, elems: &mut Elems, pid: &str, kind: &ParamKin
         }
         (ParamKind::Bool, ParamValue::Bool(b)) => {
             let mut b = *b;
-            let r = crate::widgets::accessible_name(ui.checkbox(&mut b, ""), eid.clone());
+            let r = crate::widgets::accessible_name(ui.checkbox(&mut b, ""), label);
             elems.push((eid, r.rect, b.to_string()));
             r.changed().then(|| json!({"params": { pid: b }}))
         }
@@ -515,7 +516,7 @@ fn param_widget(ui: &mut egui::Ui, elems: &mut Elems, pid: &str, kind: &ParamKin
                 }
             });
             elems.extend(options);
-            let response = crate::widgets::accessible_name(r.response, eid.clone());
+            let response = crate::widgets::accessible_name(r.response, label);
             elems.push((eid, response.rect, shown.to_string()));
             picked.map(|i| json!({"params": { pid: i }}))
         }

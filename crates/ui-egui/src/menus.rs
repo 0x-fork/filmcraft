@@ -678,11 +678,21 @@ fn paste_clipboard_media(app: &mut FilmcraftApp, insert: bool) -> Option<Result<
     Some(app.session.execute("edit.pasteMedia", params).map_err(|e| e.to_string()))
 }
 
+/// Upper bound on the RGBA copy made from a clipboard image, matching the screenshot per-image
+/// bound. The event's own `ColorImage` is still alive while this copy is encoded, so reject before
+/// allocating it rather than only checking for integer overflow.
+const MAX_CLIPBOARD_IMAGE_BYTES: usize = 128 * 1024 * 1024;
+
 /// The RGBA bytes of an image delivered by `egui::Event::PasteImage`.
 fn paste_image_media(image: &egui::ColorImage) -> Result<crate::ClipboardMedia, String> {
     let [width, height] = image.size;
     let len =
         width.checked_mul(height).and_then(|pixels| pixels.checked_mul(4)).ok_or_else(|| "the pasted image size overflows the clipboard buffer".to_string())?;
+    if len > MAX_CLIPBOARD_IMAGE_BYTES {
+        return Err(format!(
+            "the pasted image is too large: {width}×{height} needs {len} RGBA bytes, over the {MAX_CLIPBOARD_IMAGE_BYTES}-byte clipboard image limit"
+        ));
+    }
     let mut rgba = Vec::with_capacity(len);
     for c in &image.pixels {
         // `Color32` is premultiplied internally; PNG/RgbaImage expect straight alpha. Round-trip
@@ -1135,6 +1145,14 @@ mod tests {
         let png = encode_png(width, height, rgba).expect("a PNG");
         let decoded = image::load_from_memory(&png).expect("decode the pasted PNG").to_rgba8();
         assert_eq!(decoded.get_pixel(0, 0).0, [255, 0, 0, 128]);
+    }
+
+    #[test]
+    fn oversized_clipboard_images_are_rejected_before_allocating_rgba() {
+        let side = 100_000;
+        let image = egui::ColorImage { size: [side, side], source_size: egui::vec2(100_000.0, 100_000.0), pixels: Vec::new() };
+        let Err(error) = paste_image_media(&image) else { panic!("an oversized clipboard image was accepted") };
+        assert!(error.contains("too large"), "{error}");
     }
 
     /// What `cargo xtask parity` measures: every item sits under a top-level menu, and Window ▸

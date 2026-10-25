@@ -562,6 +562,25 @@ fn ime_mixed_application_and_ime_mutation_is_other() {
     assert_eq!(toolbar.change_cause, egui::output::ImeChangeCause::Other);
 }
 
+/// An Arrow key later in a raw batch uses the layout of the text from the start of that batch.
+/// Text typed earlier in the same batch can move the caret onto a byte inside a multi-byte
+/// character; the following Text/Paste/Cut must clamp it to a boundary instead of panicking.
+#[test]
+fn arrow_from_the_old_layout_does_not_split_text_inserted_in_the_same_batch() {
+    let mut d = Driver::new();
+    let clip = d.start_point_text();
+    d.exec("graphics.setText", json!({"clip": clip, "layer": 0, "text": "ab\ncd"}));
+    d.ok("ui.set", json!({"gfxEdit": {"clip": clip, "layer": 0, "caret": 0, "anchor": 0}}));
+    d.frames(2);
+
+    // After "éé" the caret is at byte 4, on the old layout's second line. ArrowUp maps its x to
+    // byte 1 of that old line, which is inside the first "é" in the current text; "x" then inserts
+    // there. Before the fix this panicked on the non-boundary insert.
+    d.harness.input_mut().events.extend([egui::Event::Text("éé".into()), key_press(egui::Key::ArrowUp), egui::Event::Text("x".into())]);
+    d.frames(2);
+    assert_eq!(d.exec("graphics.list", json!({"clip": clip}))["layers"][0]["text"], json!("xééab\ncd"));
+}
+
 fn ime_preedit(text: &str) -> egui::Event {
     egui::Event::Ime(egui::ImeEvent::Preedit { text: text.into(), active_range_chars: None })
 }

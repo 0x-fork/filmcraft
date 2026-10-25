@@ -369,6 +369,11 @@ pub struct FilmcraftApp {
     /// later of this and the host clock keeps simulated tests on their clock while a hidden
     /// logic tick (whose `InputState::time` is stale) still advances by host time.
     ui_clock: f64,
+    /// Non-negative `ui_clock - host_elapsed`, captured on the first real UI pass. Native eframe
+    /// starts its `RawInput::time` at its own integration beginning, which can precede
+    /// `clock_start`; without this offset, `max` would hold `now()` at the stale UI time during
+    /// hidden logic and then jump by the startup offset when the next UI pass arrives.
+    ui_clock_offset: Option<f64>,
     #[cfg(test)]
     test_now: Option<f64>,
     /// macOS: a Control+Click already translated to a secondary (context) click, so its release is
@@ -654,6 +659,7 @@ impl FilmcraftApp {
             pasted_image: None,
             clock_start: web_time::Instant::now(),
             ui_clock: 0.0,
+            ui_clock_offset: None,
             #[cfg(test)]
             test_now: None,
             mac_ctrl_click_armed: false,
@@ -877,7 +883,9 @@ impl FilmcraftApp {
         if let Some(now) = self.test_now {
             return now;
         }
-        self.clock_start.elapsed().as_secs_f64().max(self.ui_clock)
+        let host = self.clock_start.elapsed().as_secs_f64();
+        let host = self.ui_clock_offset.map_or(host, |offset| host + offset);
+        host.max(self.ui_clock)
     }
 
     #[cfg(test)]
@@ -2429,6 +2437,15 @@ impl FilmcraftApp {
     }
 
     fn ui_inner(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        if self.ui_clock_offset.is_none() {
+            let egui_time = ui.ctx().input(|input| input.time);
+            if egui_time.is_finite() {
+                let host = self.clock_start.elapsed().as_secs_f64();
+                // Never move host time backwards when a harness clock starts behind it; the host
+                // clock stays authoritative in that case.
+                self.ui_clock_offset = Some((egui_time - host).max(0.0));
+            }
+        }
         if !self.fonts_ready {
             // This pass did not consume the pending synthetic input; the next hook must offer it
             // again (the UI path does not preserve raw input across this early return).
@@ -2878,6 +2895,26 @@ mod gpu_fallback_tests {
         assert_eq!(super::plan_side(&p), 1920);
         let p = FramePlan::Image(filmcraft_render::Image::new(800, 4000));
         assert_eq!(super::plan_side(&p), 4000);
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+
+    /// The egui clock starts at the integration's beginning, which can precede `clock_start`.
+    /// Applying the captured offset to host time keeps hidden logic moving instead of freezing at
+    /// the last UI time and then jumping when the next UI pass arrives.
+    #[test]
+    fn now_applies_the_ui_clock_offset_and_keeps_the_test_override_first() {
+        let mut app = FilmcraftApp::new(Session::default());
+        app.ui_clock = 123.0;
+        app.ui_clock_offset = Some(1_000.0);
+        assert!(app.now() >= 1_000.0, "the captured offset moves the host clock to egui time");
+        app.ui_clock = 2_000.0;
+        assert_eq!(app.now(), 2_000.0, "an egui clock ahead of host+offset still wins");
+        app.set_now_for_test(7.0);
+        assert_eq!(app.now(), 7.0, "the deterministic test override keeps precedence");
     }
 }
 

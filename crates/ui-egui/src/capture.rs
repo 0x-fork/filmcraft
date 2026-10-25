@@ -469,7 +469,14 @@ pub(crate) fn issue(app: &mut FilmcraftApp, ctx: &egui::Context) {
             failures.push((i, message));
         }
     }
-    for (i, message) in failures.into_iter().rev() {
+    // Failures arrive from the ascending admission scan and the reverse geometry-retry scan, so
+    // sort them by index and remove from the highest index down: an earlier removal must not shift
+    // a later index (which could remove the wrong shot or panic).
+    failures.sort_unstable_by_key(|(i, _)| std::cmp::Reverse(*i));
+    for (i, message) in failures {
+        if i >= app.shots.requests.len() {
+            continue;
+        }
         let shot = app.shots.requests.remove(i);
         if let Some(slot) = shot.slot {
             slot.cancel();
@@ -615,7 +622,7 @@ mod tests {
         app.capture_geometry = Some(geometry(app));
         let (tx, rx) = channel();
         admit(app, ctx, None, None, tx);
-        let token = app.shots.requests.first().map(|shot| shot.token).unwrap_or_default();
+        let token = app.shots.requests.last().map(|shot| shot.token).unwrap_or_default();
         (rx, token)
     }
 
@@ -791,5 +798,40 @@ mod tests {
         assert_eq!(app.shots.requests.len(), 1);
         assert_eq!(app.shots.requests[0].expected, [1024, 768]);
         assert!(!app.shots.requests[0].issued, "the retry waits for its own settling passes");
+    }
+
+    #[test]
+    fn mixed_order_geometry_failures_reject_every_shot_without_shifting_indices() {
+        let ctx = egui::Context::default();
+        let mut app = app();
+        let (rx0, token0) = admit_one(&mut app, &ctx);
+        let (rx1, token1) = admit_one(&mut app, &ctx);
+        for shot in &mut app.shots.requests {
+            shot.ready_at = Instant::now() - Duration::from_millis(1);
+            shot.frames = SETTLE_PASSES;
+        }
+        app.timeline_still = 2;
+        // A resize makes both queued shots need more crop/encode buffers than the aggregate
+        // budget, so the geometry retry fails for the last shot first.
+        app.capture_geometry = Some(CaptureGeometry {
+            surface: SurfaceGeometry {
+                viewport: Some(vec2(8000.0, 4000.0)),
+                pixels_per_point: 1.0,
+                max_texture_side: 16384,
+                minimized: false,
+                occluded: false,
+            },
+            document: active_document(&app),
+            focus: None,
+        });
+        app.capture_epoch += 1;
+        issue(&mut app, &ctx);
+        assert!(app.shots.requests.is_empty(), "both failed shots were removed");
+        for (rx, token) in [(rx0, token0), (rx1, token1)] {
+            let reply = rx.try_recv().expect("each failed shot gets its own reply");
+            assert_eq!(reply["request"], token);
+            assert_eq!(reply["ok"], false, "{reply}");
+            assert!(reply["error"].as_str().unwrap_or_default().contains("aggregate"), "{reply}");
+        }
     }
 }

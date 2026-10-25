@@ -19,7 +19,7 @@ use crate::{FilmcraftApp, panels};
 
 /// The dock area's egui id; `DockArea::hit_rects` and `float_space` read by it.
 pub fn area_id() -> egui::Id {
-    egui::Id::new("filmcraft-docking")
+    egui::Id::unique("filmcraft-docking")
 }
 
 /// Where each panel body was drawn last frame, and on which layer.
@@ -311,14 +311,13 @@ impl FilmcraftApp {
         if let Some((panel, pos)) = menu {
             let frame = ctx.cumulative_frame_nr();
             ctx.data_mut(|data| {
-                data.insert_temp(egui::Id::new("panel-menu"), (panel, pos));
-                data.insert_temp(egui::Id::new("panel-menu-opened"), frame);
+                data.insert_temp(egui::Id::unique("panel-menu"), (panel, pos));
+                data.insert_temp(egui::Id::unique("panel-menu-opened"), frame);
             });
         }
         let hits = DockArea::<PanelKind>::hit_rects(&ctx, area_id());
         self.register_dock_hits(&hits);
         panels::panel_menu_popup(self, ui);
-        self.cancel_value_drag(ui.ctx());
     }
 
     /// The Timeline's tabs stand for its open sequences: a close from the dock area (a tab's
@@ -546,8 +545,8 @@ impl DockContent<PanelKind> for FilmContent<'_> {
             self.seq_actions.extend(dock::sequence_tabs(ui, strip, &self.seqs, &t, &mut self.app.auto));
         }
         let rect = Rect::from_center_size(menu.center(), vec2(18.0, 18.0));
-        let response = ui.interact(rect, egui::Id::new(("panel-menu-button", active.id())), Sense::click());
-        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), "panel menu"));
+        let response = ui.interact(rect, egui::Id::unique(("panel-menu-button", active.id())), Sense::click());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, response.enabled(), "panel menu"));
         self.app.auto.add_response(&format!("panel.menu.{}", active.id()), &response, "panel menu");
         let color = if response.hovered() { t.tab_text_active } else { t.tab_text };
         icons::paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(16.0, 16.0)), Icon::Hamburger, color);

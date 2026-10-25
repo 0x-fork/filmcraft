@@ -29,9 +29,9 @@ fn tab_traversal_and_space_select_only_the_focused_tool_with_visible_focus() {
     h.state_mut().ui.dock =
         craft_ui::docking::Layout { root: Some(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Tools], active: 0 }), floating: vec![] };
     h.run_steps(3);
-    let first = Id::new(("tool", "Selection".to_string()));
-    let second = Id::new(("tool", "TrackSelectForward".to_string()));
-    let third = Id::new(("tool", "Ripple".to_string()));
+    let first = Id::unique(("tool", "Selection".to_string()));
+    let second = Id::unique(("tool", "TrackSelectForward".to_string()));
+    let third = Id::unique(("tool", "Ripple".to_string()));
     for _ in 0..128 {
         key(&mut h, Key::Tab, Modifiers::NONE);
         if h.ctx.memory(|m| m.focused()) == Some(first) {

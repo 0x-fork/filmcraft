@@ -638,12 +638,12 @@ pub fn sequence_tabs(ui: &mut egui::Ui, strip: Rect, seqs: &SeqTabs, t: &Tokens,
     while last + 1 < seqs.open.len() && span(first, last + 1) <= room {
         last += 1;
     }
-    let list_id = egui::Id::new("timeline-tab-list");
+    let list_id = egui::Id::unique("timeline-tab-list");
     let more = (!all_fit).then(|| Rect::from_min_size(pos2(strip.max.x - 22.0, strip.center().y - 10.0), vec2(18.0, 20.0)));
     let mut list_opened = false;
     if let Some(r) = more {
-        let resp = ui.interact(r, egui::Id::new("timeline-tab-overflow"), Sense::click());
-        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, resp.enabled(), "more tabs"));
+        let resp = ui.interact(r, egui::Id::unique("timeline-tab-overflow"), Sense::click());
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, resp.enabled(), "more tabs"));
         reg.add_response("timeline.tabs.more", &resp, "more tabs");
         let c = if resp.hovered() { t.tab_text_active } else { t.tab_text };
         icons::paint(&painter, r.shrink(4.0).translate(vec2(-2.0, 0.0)), Icon::ChevronRight, c);
@@ -657,7 +657,7 @@ pub fn sequence_tabs(ui: &mut egui::Ui, strip: Rect, seqs: &SeqTabs, t: &Tokens,
     }
     // The wheel over the strip steps through the tabs: down = next, up = previous, one tab per
     // notch (trackpad scrolling adds up to a notch first), stopping at the ends.
-    let wheel_id = egui::Id::new("timeline-tab-wheel");
+    let wheel_id = egui::Id::unique("timeline-tab-wheel");
     if ui.rect_contains_pointer(strip) && !seqs.open.is_empty() {
         const NOTCH: f32 = 40.0;
         let total = ui.ctx().data(|d| d.get_temp::<f32>(wheel_id)).unwrap_or(0.0) + crate::panels::timeline::wheel_input(ui.ctx()).delta.y;
@@ -680,8 +680,8 @@ pub fn sequence_tabs(ui: &mut egui::Ui, strip: Rect, seqs: &SeqTabs, t: &Tokens,
         let w = widths.get(i).copied().unwrap_or(0.0);
         let tab_rect = Rect::from_min_size(pos2(x, strip.min.y), vec2(w, strip.height()));
         // a sequence tab keeps its identity when the tabs are reordered under the pointer
-        let resp = ui.interact(tab_rect, egui::Id::new(("tab-seq", *id)), Sense::click_and_drag());
-        resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, resp.enabled(), is_active, name));
+        let resp = ui.interact(tab_rect, egui::Id::unique(("tab-seq", *id)), Sense::click_and_drag());
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, resp.enabled(), is_active, name));
         ui.ctx().accesskit_node_builder(resp.id, |node| {
             node.set_role(egui::accesskit::Role::Tab);
             node.set_selected(is_active);
@@ -692,7 +692,7 @@ pub fn sequence_tabs(ui: &mut egui::Ui, strip: Rect, seqs: &SeqTabs, t: &Tokens,
             dragged = Some(*id);
         }
         // Escape puts a dragged tab back where it was (egui ends the drag on Escape, #580)
-        let home = egui::Id::new(("tab-seq-home", *id));
+        let home = egui::Id::unique(("tab-seq-home", *id));
         if resp.drag_started() {
             ui.data_mut(|d| d.insert_temp(home, i));
         }
@@ -711,8 +711,8 @@ pub fn sequence_tabs(ui: &mut egui::Ui, strip: Rect, seqs: &SeqTabs, t: &Tokens,
         if is_active {
             // × closes the sequence's tab (the sequence stays in the project)
             let cr = Rect::from_center_size(pos2(tab_rect.min.x + 10.0, text_y), vec2(8.0, 8.0));
-            let cresp = ui.interact(cr.expand(4.0), egui::Id::new(("tab-close", *id)), Sense::click());
-            cresp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, cresp.enabled(), "close sequence"));
+            let cresp = ui.interact(cr.expand(4.0), egui::Id::unique(("tab-close", *id)), Sense::click());
+            cresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, cresp.enabled(), "close sequence"));
             reg.add_response(&format!("timeline.tab.{id}.close"), &cresp, "close sequence");
             let cc = if cresp.hovered() { t.tab_text_active } else { t.tab_text };
             painter.line_segment([cr.left_top(), cr.right_bottom()], Stroke::new(1.2, cc));

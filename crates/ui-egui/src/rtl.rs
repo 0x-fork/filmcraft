@@ -179,10 +179,12 @@ pub(crate) fn paint_line(painter: &Painter, rect: Rect, text: &str, font: FontId
 mod tests {
     use super::*;
 
+    /// Diagnostic helper: glyph characters in visual order, with control characters filtered out.
     fn drawn_chars(row: &egui::epaint::text::Row) -> Vec<char> {
         row.visual_order().map(|i| row.glyphs[i].chr).filter(|c| !c.is_control()).collect()
     }
 
+    /// A right-to-left paragraph sets both RTL flags and draws the second logical word first.
     #[test]
     fn rtl_paragraph_is_flagged_and_visually_ordered() {
         let ctx = egui::Context::default();
@@ -199,6 +201,7 @@ mod tests {
         ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
     }
 
+    /// Paragraph direction follows the first strong character; an embedded RTL phrase must not flip the line.
     #[test]
     fn ltr_paragraph_with_an_rtl_phrase_keeps_its_direction() {
         let ctx = egui::Context::default();
@@ -212,6 +215,7 @@ mod tests {
         ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
     }
 
+    /// Bidi classification remains total for Latin, punctuation and Arabic input.
     #[test]
     fn hostile_ranges_do_not_panic() {
         assert!(!has_rtl("Lesson 3: (draft)"));

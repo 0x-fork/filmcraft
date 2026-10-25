@@ -415,6 +415,7 @@ fn run_actions(app: &mut FilmcraftApp, ctx: &egui::Context, acts: Vec<(String, V
     }
 }
 
+/// Draw one mixer strip. A missing track is a no-op; automation ids use `mixer.<label>`; the master strip has `MASTER_STRIP` handling.
 fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, sr: Rect, meter: &[[f32; 2]]) {
     let t = cx.t;
     let seq = cx.seq;

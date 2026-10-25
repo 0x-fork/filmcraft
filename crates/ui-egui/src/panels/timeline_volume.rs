@@ -205,6 +205,7 @@ struct KeyDrag {
     begun: bool,
 }
 
+/// Single stable id for the in-flight audio keyframe drag; interaction runs above the clips.
 fn key_drag_id() -> egui::Id {
     egui::Id::unique("tl-volume-key-drag")
 }

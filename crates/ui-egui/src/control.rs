@@ -117,6 +117,8 @@ fn point(app: &FilmcraftApp, p: &Value) -> Result<egui::Pos2, String> {
     Ok(egui::pos2(x as f32, y as f32))
 }
 
+/// Execute one control request. Synthetic input is capped by `MAX_SYNTHETIC_EVENTS` before queueing, screenshot crops stay symbolic until capture, and
+/// `gfxEdit` layer identity is resolved from the document.
 pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
     let p = &req.params;
     let s = |k: &str| p.get(k).and_then(Value::as_str);
@@ -569,6 +571,7 @@ fn merge(v: &mut Value, patch: &Value) {
     }
 }
 
+/// Read-only JSON snapshot; focus and element counts come from the current accepted registry pass.
 pub fn inspect(app: &FilmcraftApp, ctx: &egui::Context) -> Value {
     let size = ctx.content_rect().size();
     let keyboard_focus = ctx.memory(|memory| memory.focused()).map(|id| {
@@ -854,6 +857,7 @@ mod base64_tests {
         }
     }
 
+    /// Negative and overhanging panel origins clip to the visible image without shifting the requested region, at any scale.
     #[test]
     fn screenshot_crop_clips_negative_panel_origin() {
         // A panel starting two points left of / one point above the window: only the visible
@@ -865,6 +869,7 @@ mod base64_tests {
         assert_eq!(super::crop_pixels([8, 8], Some([6.0, 5.0, 4.0, 4.0]), 1.0).unwrap(), (6, 5, 2, 3));
     }
 
+    /// Crops with no overlap or a non-finite/non-positive size are refused, never rendered as a zero-sized image.
     #[test]
     fn screenshot_crop_outside_the_image_is_refused() {
         for crop in [[-8.0, -8.0, 4.0, 4.0], [8.0, 0.0, 4.0, 4.0], [0.0, 9.0, 4.0, 4.0]] {

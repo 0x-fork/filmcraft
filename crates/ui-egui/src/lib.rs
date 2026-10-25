@@ -608,6 +608,8 @@ impl FilmcraftApp {
 }
 
 impl FilmcraftApp {
+    /// Build the app around one shared `FrameServer`, falling back to the default language on an unparsable preference, loading workspaces from the prefs
+    /// directory and seeding IME epoch/sequence identity.
     pub fn new(mut session: Session) -> Self {
         session.shortcuts.register_external(menus::external_commands());
         let recovery = !session.recovery_candidates().is_empty();
@@ -1392,6 +1394,8 @@ impl FilmcraftApp {
         }
     }
 
+    /// Advance the Program playhead only while playing; owns preroll completion, audio-clock anchoring, output retry and the fallback to wall time when audio
+    /// is lost or stalls.
     fn advance_playback(&mut self, ctx: &egui::Context) {
         if !self.playback.playing {
             return;
@@ -1824,6 +1828,8 @@ impl FilmcraftApp {
             .any(|e| e.response_id == Some(focused) && (e.id.starts_with("dock.gutter.") || (e.id.starts_with("panel.float.") && e.id.ends_with(".resize"))))
     }
 
+    /// Per-pass shortcut handling: reset the pasted image, rebuild bindings only when the shortcut revision or workspace set changes, and leave unmodified keys
+    /// to a focused text field except dock dividers.
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         // A paste image payload belongs to the paste event in this pass only.
         self.pasted_image = None;
@@ -1962,6 +1968,8 @@ impl FilmcraftApp {
         ctx.request_repaint();
     }
 
+    /// Drain queued control requests without blocking: UI requests wait for a layout pass with a 3 s deadline (except screenshots), non-UI requests run now,
+    /// and hidden windows are raised and repainted.
     fn drain_control(&mut self, ctx: &egui::Context) {
         let Some(rx) = self.control_rx.take() else { return };
         let now = self.now();
@@ -2088,6 +2096,7 @@ impl FilmcraftApp {
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
     }
 
+    /// Top-level UI pass: set the language, honor the injected panic test hook, lay out header, body and status bar, and dispatch the active mode.
     fn frame(&mut self, ui: &mut egui::Ui) {
         i18n::set_current(self.ui.language);
         if std::mem::take(&mut self.panic_next_frame) {
@@ -2792,6 +2801,7 @@ mod clipboard_key_tests {
         events.into_iter().filter_map(|e| if let Event::Key { key, modifiers, pressed: true, .. } = e { Some((key, modifiers)) } else { None }).collect()
     }
 
+    /// Clipboard Copy/Cut/Paste events become C/X/V key presses so they match the shortcut bindings.
     #[test]
     fn ctrl_c_x_v_become_key_presses() {
         let c = Modifiers::COMMAND;
@@ -3164,6 +3174,7 @@ mod audio_recovery_tests {
         app.stop();
     }
 
+    /// A device that loses its playback clock resumes from the displayed frame and reports a status message.
     #[test]
     fn a_failed_device_clock_resumes_from_the_displayed_frame() {
         let mut session = Session::default();
@@ -3208,6 +3219,7 @@ mod audio_recovery_tests {
         }
     }
 
+    /// A recovered stream keeps the device clock and the sound keeps playing.
     #[test]
     fn a_restarted_stream_keeps_the_device_clock_and_the_sound() {
         let mut session = Session::default();
@@ -3255,6 +3267,7 @@ mod audio_recovery_tests {
         }
     }
 
+    /// A lost output is reopened on retry and the sound returns without pause/play.
     #[test]
     fn a_lost_output_is_reopened_and_the_sound_returns() {
         let mut session = Session::default();
@@ -3283,6 +3296,7 @@ mod audio_recovery_tests {
         app.stop();
     }
 
+    /// A device that becomes available mid-playback starts sounding on the next retry.
     #[test]
     fn a_device_that_appears_mid_playback_starts_sounding() {
         let mut session = Session::default();
@@ -3364,6 +3378,7 @@ mod text_focus_shortcut_tests {
 mod voiceover_playback_tests {
     use super::*;
 
+    /// A voice-over take into an empty timeline past the end keeps playing and recording.
     #[test]
     fn a_voice_over_take_records_into_the_empty_timeline_past_the_end() {
         let mut session = Session::default();

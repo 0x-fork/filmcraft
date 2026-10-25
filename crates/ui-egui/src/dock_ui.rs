@@ -17,6 +17,7 @@ fn floating_rect(group: &dock::Floating, screen: Rect) -> Rect {
     ))
 }
 
+/// The single stable id holding an in-flight docked-panel drag across frames.
 fn drag_id() -> egui::Id {
     egui::Id::unique("dock-panel-drag")
 }
@@ -170,6 +171,7 @@ impl FilmcraftApp {
         true
     }
 
+    /// Floating group indexes in layer z-order; groups without a layer sort last.
     fn floating_order(&self, ctx: &egui::Context) -> Vec<usize> {
         let layers = ctx.memory(|memory| memory.layer_ids().collect::<Vec<_>>());
         let mut order: Vec<_> = (0..self.ui.floating.len()).collect();
@@ -187,6 +189,8 @@ impl FilmcraftApp {
         order
     }
 
+    /// Lay out the dock area and floating groups; while a panel is maximized a temporary one-panel tree is drawn and the saved dock is left untouched, and a
+    /// pending panel raise moves its floating layer to the top.
     pub(crate) fn dock_area(&mut self, ui: &mut egui::Ui, body: Rect) {
         let t = self.tokens;
         let ctx = ui.ctx().clone();
@@ -292,6 +296,8 @@ impl FilmcraftApp {
         panels::panel_menu_popup(self, ui);
     }
 
+    /// Draw one floating group on the middle layer, clamped on-screen with a minimum size; register its move/resize automation ids and submit `MoveFloating`
+    /// for a drag or resize.
     fn floating_group(&mut self, ctx: &egui::Context, index: usize, seqs: &dock::SeqTabs, actions: &mut Vec<DockAction>) -> Option<DropTarget<PanelKind>> {
         let floating = self.ui.floating.get(index)?.clone();
         let panel = *floating.panels.first()?;
@@ -348,6 +354,8 @@ impl FilmcraftApp {
         output
     }
 
+    /// Continue a docked panel drag: cancel on Escape, focus loss or an absent press/release, discard stale panel ids, prefer workspace-edge drops, and treat
+    /// Command as force-float.
     fn panel_drag(&mut self, ctx: &egui::Context, body: Rect, targets: &[DropTarget<PanelKind>]) {
         let Some(panel) = ctx.data(|data| data.get_temp::<PanelKind>(drag_id())) else { return };
         let canceled =

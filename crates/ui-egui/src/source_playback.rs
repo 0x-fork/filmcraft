@@ -198,6 +198,8 @@ impl FilmcraftApp {
         }
     }
 
+    /// Advance Source audition playback while playing; stop on a missing or unavailable item or a failure, and re-anchor when the Source playhead is moved
+    /// externally.
     pub(crate) fn advance_source_playback(&mut self, ctx: &egui::Context) {
         if !self.source_playback.clock.playing {
             return;

@@ -21,6 +21,7 @@ struct Drag {
     pointer_x: f32,
     revision: u64,
 }
+/// Temp-store key for the in/out range drag, per monitor, so Source and Program drags never alias.
 fn key(which: Which) -> egui::Id {
     egui::Id::unique(("monitor-range-edit", which as u8))
 }

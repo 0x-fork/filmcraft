@@ -1147,6 +1147,7 @@ mod tests {
         assert_eq!(decoded.get_pixel(0, 0).0, [255, 0, 0, 128]);
     }
 
+    /// An image whose RGBA size exceeds the 128 MiB cap is rejected before any RGBA copy is allocated.
     #[test]
     fn oversized_clipboard_images_are_rejected_before_allocating_rgba() {
         let side = 100_000;

@@ -547,6 +547,8 @@ fn new_text_action(app: &FilmcraftApp, pic: Rect, frame: (u32, u32), at: Pos2, c
 
 pub(crate) const TEXT_EDIT_ID: &str = "gfx-text-edit";
 
+/// End text editing: clear `gfx_edit`, invalidate any in-flight IME composition, surrender focus and forget the panel tag so a late commit cannot reach the
+/// next editor.
 fn end_edit(app: &mut FilmcraftApp, ui: &egui::Ui) {
     app.ui.gfx_edit = None;
     // Any composition that was in flight belongs to the editor that just ended; a late commit
@@ -1211,6 +1213,7 @@ fn finish_pen(app: &mut FilmcraftApp, pic: Rect, frame: (u32, u32), actions: &mu
     actions.push(("graphics.newShape".into(), p));
 }
 
+/// Start editing a text layer at screen point `p` (caret at the text hit, else the end), restart the IME target, record clip/layer/uid and select the layer.
 fn start_edit_at(app: &mut FilmcraftApp, ui: &egui::Ui, v: &LayerView, p: Pos2, actions: &mut Vec<(String, Value)>) {
     let Some(tp) = text_of(&v.spec) else { return };
     let l = text_layout(tp);
@@ -2351,6 +2354,8 @@ impl Ctx<'_> {
             self.actions.push(("effects.toggleAnimation".into(), json!({"clip": self.clip.0, "effect": self.eidx, "param": id})));
         }
     }
+    /// Draw a labeled hot number for this clip/layer/`id`, register it for automation and emit the changed value through `Ctx::set`; `range` bounds typed and
+    /// dragged input.
     fn number(&mut self, ui: &mut egui::Ui, label: &str, id: &str, speed: f64, range: (f64, f64), dec: usize, unit: &str) {
         let v = pv(self.e, id, self.mt).as_f64().unwrap_or(0.0);
         let (r, mut vui) = self.row(ui, label);
@@ -2384,6 +2389,7 @@ impl Ctx<'_> {
             self.set(id, json!(nv));
         }
     }
+    /// Draw X and Y hot numbers for this clip/layer/`id` with independent ids and ±100,000 bounds, register both and emit both components when either changes.
     fn point(&mut self, ui: &mut egui::Ui, label: &str, id: &str) {
         let v = pv(self.e, id, self.mt).as_vec2().unwrap_or_default();
         let (r, mut vui) = self.row(ui, label);

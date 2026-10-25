@@ -375,6 +375,8 @@ fn label_color(app: &FilmcraftApp, l: filmcraft_project::Label) -> Color32 {
     crate::panels::settings::label_color(app, l)
 }
 
+/// Draw the Timeline and run its interaction. A missing or damaged active sequence shows the empty state; `stable_dt` is capped, and a project snapshot is kept
+/// while commands mutate the session.
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let ctx = ui.ctx().clone();
@@ -812,6 +814,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let _ = (visible, TICKS_PER_SECOND);
 }
 
+/// Shown when no sequence is open: offers the demo project and accepts project or OS-file drops to create a sequence.
 fn empty_state(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     ui.painter().text(rect.center() - vec2(0.0, 12.0), Align2::CENTER_CENTER, tl!("Drop media here to create sequence."), Tokens::ui(13.0), t.text_dim);
@@ -1379,6 +1382,7 @@ fn patch_button(ui: &mut egui::Ui, r: Rect, clip: Rect, label: &str, on: bool, s
     resp
 }
 
+/// Draw only the visible track headers, including colour label, targeting, lock and header controls clipped to each row.
 #[allow(clippy::too_many_arguments)]
 fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows: &[Row], rect: Rect, vclip: Rect, aclip: Rect, t: &Tokens) {
     let hw = app.ui.timeline.header_w;
@@ -1598,6 +1602,7 @@ pub fn ruler_steps(frame_px: f64, base: i64) -> (i64, i64) {
     (minor, label_step)
 }
 
+/// Draw editable timecode, the timeline toolbar and ruler. Rejected timecode edits report a status message; toolbar command errors are ignored.
 fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequence, layout: &Layout, t: &Tokens, seq_id: ItemId) {
     let p = ui.painter().clone();
     let rate = seq.settings.frame_rate;
@@ -1823,6 +1828,8 @@ fn zoom_thumb(bar: Rect, seq_seconds: f64, scroll: f64, pps: f64) -> (f32, f32, 
     (bar.min.x + at, w, if travel > 0.5 { range / travel as f64 } else { 0.0 })
 }
 
+/// Draw the zoom scroll bar: the thumb reflects the visible range, a press beside it centres the thumb under the pointer, and the thumb and track are
+/// registered for automation.
 fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, seq_seconds: f64, t: &Tokens) {
     let p = ui.painter();
     p.rect_filled(bar, bar.height() / 2.0, t.separator);
@@ -2416,6 +2423,8 @@ fn scrub_playhead(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, p: Po
     app.session.set_playhead(tt);
 }
 
+/// Handle Timeline pointer input: remember the grab from the press frame, jump the playhead on a ruler press, select a marker on its press, and reset the
+/// cancel flag once the button is released.
 fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &Layout, rect: Rect) {
     let ctx = ui.ctx().clone();
     let area = Rect::from_min_max(pos2(layout.content.min.x, layout.ruler.min.y), layout.content.max);

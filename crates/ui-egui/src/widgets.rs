@@ -41,6 +41,7 @@ pub struct HotNumberOptions<'a> {
 }
 
 impl<'a> HotNumberOptions<'a> {
+    /// Const constructor grouping speed, range, decimals, suffix and theme tokens; it performs no validation.
     pub const fn new(speed: f64, range: (f64, f64), decimals: usize, suffix: &'a str, tokens: &'a Tokens) -> Self {
         Self { speed, range, decimals, suffix, tokens }
     }
@@ -126,6 +127,7 @@ fn hot_number_display(ui: &mut Ui, id: egui::Id, value: f64, options: HotNumberO
     (resp, out)
 }
 
+/// Drag sensitivity: Shift ×10, Command ×0.1, otherwise ×1. Typed values are unaffected.
 fn hot_number_drag_multiplier(ui: &Ui) -> f64 {
     ui.input(|i| {
         if i.modifiers.shift {

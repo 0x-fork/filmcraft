@@ -51,6 +51,7 @@ enum Note {
 }
 
 impl Note {
+    /// Localized status text for a fallback device (name interpolated through `fmt`) or for no output device.
     fn text(&self) -> String {
         use filmcraft_ui_egui::i18n::{fmt, t};
         match self {

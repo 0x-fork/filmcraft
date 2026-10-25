@@ -53,6 +53,7 @@ const PREVIEW_BASE: u64 = 1 << 44;
 const CACHE_SECS: f64 = 3.0;
 const ROW_H: f32 = 22.0;
 
+/// Temp-store key for the Media Browser cache: listings stay fresh for 3 s and preview texture ids start at `PREVIEW_BASE`.
 fn cache_id() -> egui::Id {
     egui::Id::unique("media-browser-cache")
 }

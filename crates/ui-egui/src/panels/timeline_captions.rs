@@ -36,6 +36,7 @@ enum Gesture {
     TrimOut,
 }
 
+/// Single stable id for the live caption drag `(caption, gesture, delta ticks)`.
 fn drag_id() -> egui::Id {
     egui::Id::unique("caption-drag")
 }
@@ -245,6 +246,8 @@ fn razor_block(
     }
 }
 
+/// Handle one caption block: 5 px trim edges (capped at a quarter width), hover cursor, selection and double-click, and drag state; locked tracks are
+/// read-only.
 fn interact_block(
     app: &mut FilmcraftApp,
     ui: &mut egui::Ui,

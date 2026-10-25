@@ -525,6 +525,7 @@ pub fn layout_with_actions(
     layout_inner(ui, node, rect, t, path, &[], out, reg, actions);
 }
 
+/// Recursively lay out tabs and splits with path-based automation ids, emitting gutter resize actions; groups are appended in traversal order.
 fn layout_inner(
     ui: &mut egui::Ui,
     node: &mut DockNode,
@@ -593,6 +594,7 @@ pub struct Chrome {
     pub tabs: Vec<(PanelKind, Rect)>,
 }
 
+/// Draw a group's frame and tab strip, register panel/tab automation ids and return its dock actions; a compact single panel gets an 8 pt grip header.
 pub fn draw_group_chrome_details(ui: &mut egui::Ui, g: &Group, seqs: &SeqTabs, t: &Tokens, reg: &mut crate::automation::Registry) -> Chrome {
     let mut actions = Vec::new();
     let mut tab_rects: Vec<(PanelKind, Rect)> = Vec::new();

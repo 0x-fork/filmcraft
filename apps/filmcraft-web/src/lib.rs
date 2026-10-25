@@ -94,6 +94,7 @@ impl eframe::App for WebApp {
         self.app.raw_input_hook(ctx, raw_input);
     }
 
+    /// Hidden logic pass: host actions, app logic, API replies, jobs, audio, autosave, then IME reset; it does not draw UI.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let actions = ACTIONS.with(|a| std::mem::take(&mut *a.borrow_mut()));
         for f in actions {

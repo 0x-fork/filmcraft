@@ -74,6 +74,7 @@ thread_local! {
     static CLOCK: web_time::Instant = web_time::Instant::now();
 }
 
+/// Milliseconds from a monotonic browser clock; codec idle and staleness accounting must never use wall time.
 fn now_ms() -> f64 {
     CLOCK.with(|clock| clock.elapsed().as_secs_f64() * 1000.0)
 }

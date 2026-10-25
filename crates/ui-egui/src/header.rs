@@ -10,6 +10,7 @@ use crate::icons::{self, Icon};
 use crate::state::Mode;
 use crate::theme::Tokens;
 
+/// Draw the header bar; dragging starts a native window move and double-click toggles maximized.
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let p = ui.painter().clone();

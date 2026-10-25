@@ -1128,6 +1128,7 @@ mod tests {
 mod bcp47_tests {
     use super::Language;
 
+    /// Protocol-facing BCP 47 tags use `pt-BR`/`zh-CN`; every tag is non-empty ASCII.
     #[test]
     fn accesskit_tags_use_protocol_spelling() {
         assert_eq!(Language::En.bcp47(), "en");

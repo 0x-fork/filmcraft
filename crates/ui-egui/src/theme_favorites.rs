@@ -1,4 +1,5 @@
 //! Original theme favorite star artwork, MIT OR Apache-2.0.
+/// Draw the 22×22 favorite star button: visibility flag, favorite accent, accessible label and original vector artwork.
 pub(crate) fn star(ui: &mut egui::Ui, favorite: bool, visible: bool, accent: egui::Color32, label: &str) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));

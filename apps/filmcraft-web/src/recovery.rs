@@ -36,6 +36,7 @@ pub struct Autosave {
 }
 
 impl Default for Autosave {
+    /// Default policy with a monotonic host clock, so hidden-tab logic never uses a stale egui input time.
     fn default() -> Self {
         Self { policy: Policy::default(), outcomes: Rc::default(), clock: web_time::Instant::now() }
     }

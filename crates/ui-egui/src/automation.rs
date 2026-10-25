@@ -83,10 +83,12 @@ mod tests {
 
     use super::Registry;
 
+    /// Test helper: a 10×10 rect at `x` for pass-order fixtures.
     fn rect(x: f32) -> Rect {
         Rect::from_min_size(pos2(x, 0.0), vec2(10.0, 10.0))
     }
 
+    /// Lookups and prefix queries must resolve the pass just drawn, not stale geometry.
     #[test]
     fn lookups_prefer_the_current_accepted_pass() {
         let mut registry = Registry::default();
@@ -98,6 +100,7 @@ mod tests {
         assert_eq!(registry.find_current("panel.project").map(|e| e.rect[0]), Some(200.0));
     }
 
+    /// Once the current pass registers an element, a removed id must not resolve from the previous pass.
     #[test]
     fn removed_elements_do_not_resolve_from_a_populated_current_pass() {
         let mut registry = Registry::default();
@@ -110,6 +113,7 @@ mod tests {
         assert!(registry.query("dialog.").is_empty());
     }
 
+    /// The previous pass is usable only before the current pass draws; a discarded pass leaves exactly one entry.
     #[test]
     fn the_previous_pass_is_only_a_fallback_before_this_pass_draws() {
         let mut registry = Registry::default();

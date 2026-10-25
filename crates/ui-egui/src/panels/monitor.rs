@@ -944,6 +944,7 @@ fn set_transport_visible(hidden: &mut Vec<String>, command: &str, visible: bool)
 /// Width and height of a transport button.
 const TRANSPORT_BUTTON: f32 = 28.0;
 
+/// Draw a monitor's Source or Program transport. Row buttons use `transport_button`; overflow-menu entries call `invoke_transport` directly.
 fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which) {
     let t = app.tokens;
     let src = which == Which::Source;
@@ -1086,6 +1087,7 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
     }
 }
 
+/// Draw one transport button with a unique id, automation registration, hover fill, proxy accent and a larger play icon; returns whether it was clicked.
 fn transport_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, prefix: &str, icon: Icon, command: &str, label: &str) -> bool {
     let t = app.tokens;
     let response = ui.interact(rect, egui::Id::unique((prefix, command)), Sense::click()).on_hover_text(label);

@@ -123,6 +123,7 @@ enum DragPayload {
     Template(String, String),
 }
 
+/// Single egui temp slot holding the active drag payload: a project item or bin, a source, an effect or a graphics template.
 fn payload_id() -> egui::Id {
     egui::Id::unique("filmcraft-drag-payload")
 }
@@ -205,6 +206,7 @@ pub fn clear_drag(ui: &egui::Ui) {
     ui.ctx().data_mut(|d| d.insert_temp::<Option<DragPayloadBox>>(payload_id(), None));
 }
 
+/// Temp-store key marking a cancelled drag until the button is released, so it cannot restart immediately.
 fn cancelled_id() -> egui::Id {
     egui::Id::unique("filmcraft-drag-cancelled")
 }

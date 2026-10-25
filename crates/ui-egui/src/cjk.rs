@@ -105,6 +105,7 @@ fn install_chinese(fonts: &mut FontDefinitions) {
 mod font_blob_tests {
     use super::*;
 
+    /// `FontData::from_blob` retains the TTC face index when constructed from a shared blob.
     #[test]
     fn a_ttc_face_index_survives_font_data_construction() {
         let font = FontData::from_blob(Arc::new(vec![0u8; 4]), 7);

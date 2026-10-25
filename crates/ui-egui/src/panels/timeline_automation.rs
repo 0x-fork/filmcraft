@@ -137,6 +137,7 @@ struct KfDrag {
     grab: egui::Vec2,
 }
 
+/// Single stable id for the in-flight track-automation keyframe drag.
 fn drag_id() -> egui::Id {
     egui::Id::unique("tl-lane-kf-drag")
 }

@@ -57,7 +57,7 @@ impl FilmcraftApp {
         }
     }
 
-    /// [`FilmcraftApp::scrub_audio`] with the clock and the button state given. Returns whether
+    /// `FilmcraftApp::scrub_audio` with the clock and the button state given. Returns whether
     /// the scrub stream is still open.
     pub fn scrub_tick(&mut self, now: f64, down: bool) -> bool {
         let ph = self.session.playhead();

@@ -206,7 +206,7 @@ pub enum Dialog {
     NewSequence,
     /// Settings (Preferences window; page in `UiState::settings`).
     Preferences,
-    /// "Recover unsaved changes from <time>?" (shown at startup when a dead session left some).
+    /// "Recover unsaved changes from `<time>`?" (shown at startup when a dead session left some).
     Recovery,
     /// "Are you sure you want to discard your changes?" (File ▸ Revert).
     RevertConfirm,
@@ -307,7 +307,7 @@ pub struct FilmcraftApp {
     native_dialog: Option<native_dialogs::PendingDialog>,
     pub auto: automation::Registry,
     /// IME owner/generation/cause state for the custom editors on the Program monitor. State is
-    /// kept per egui viewport; a closed viewport is released in [`Self::on_exit`].
+    /// kept per egui viewport; a closed viewport is released in [`eframe::App::on_exit`].
     pub(crate) ime_context: ImeContextTracker,
     /// Bumped when the custom text edit target is (re)created, a sequence/document context
     /// changes, or a control request replaces `gfxEdit`. It is the replacement epoch of the
@@ -742,6 +742,10 @@ impl FilmcraftApp {
         self.ime_composition_viewport = Some(self.ime_reset.viewport);
     }
 
+    /// Feed the live local edit destination to the reset reducer before each raw event. When an
+    /// origin exists, a changed destination retires the old composition token and marks the
+    /// composition stale; an unchanged destination only re-arms a pending `NeedsRequest`. Call
+    /// with the editor's actual text, never a staged engine copy.
     pub(crate) fn sync_live_ime_destination(&mut self, ctx: &egui::Context, destination: ime_reset::Destination) {
         let viewport = ctx.viewport_id();
         self.ime_reset.viewport = viewport;
@@ -761,6 +765,9 @@ impl FilmcraftApp {
         self.ime_reset.sync(ctx, destination);
     }
 
+    /// Retire the current composition and suspend this viewport's IME fence. UI paths that lose
+    /// the editor route through this; context-less control commands call
+    /// `invalidate_ime_composition` directly. Only an eligible final descriptor can re-arm the guard.
     pub(crate) fn suspend_ime_input(&mut self, ctx: &egui::Context) {
         self.ime_reset.viewport = ctx.viewport_id();
         self.invalidate_ime_composition();
@@ -791,6 +798,10 @@ impl FilmcraftApp {
         }
     }
 
+    /// End-of-UI-pass reconciliation. Suspend and finish as ineligible when the custom output is
+    /// absent, the window is unfocused, a modal owns input, or the text edit lacks focus;
+    /// otherwise sync the live destination and let `finish` bind or allocate only for actual
+    /// custom eligibility.
     fn finish_ime_reset_ui(&mut self, ctx: &egui::Context) {
         let focused = ctx.input(|input| input.viewport().focused.unwrap_or(input.focused));
         let eligible = self.ime_reset.owns_output(ctx)
@@ -888,6 +899,7 @@ impl FilmcraftApp {
         host.max(self.ui_clock)
     }
 
+    /// Override `now()` with a deterministic value for tests; compiled only under `cfg(test)`.
     #[cfg(test)]
     pub(crate) fn set_now_for_test(&mut self, now: f64) {
         self.test_now = Some(now);
@@ -1491,6 +1503,8 @@ impl FilmcraftApp {
         self.upload_frame(ctx, name, key, img, true)
     }
 
+    /// Fetch or create the named texture and upload only when `key` changed; `alpha` selects
+    /// transparent or opaque conversion. Returns the texture's stable id.
     fn upload_frame(&mut self, ctx: &egui::Context, name: &str, key: FrameKey, img: &frames::Rgba, alpha: bool) -> egui::TextureId {
         let image = || img.color_image(alpha);
         if let Some((k, tex)) = self.textures.get_mut(name) {
@@ -2448,6 +2462,9 @@ impl FilmcraftApp {
         }
     }
 
+    /// Run one logic pass in order: retain the later UI clock, poll the native dialog, apply the
+    /// logic subsystems, advance playback, poll jobs, then drain completed screenshots and ask
+    /// for hidden paints. Safe on hidden logic-only callbacks.
     pub fn logic_inner(&mut self, ctx: &egui::Context) {
         // Remember the pass's clock before anything reads `now()`. A hidden logic-only tick keeps
         // the last UI time (which is stale there), so `now()` never runs behind the host clock.
@@ -2467,6 +2484,10 @@ impl FilmcraftApp {
         capture::request_hidden_paint(self, ctx);
     }
 
+    /// Draw one real UI pass. Establish the UI clock offset once, run first-pass input handling,
+    /// draw panels under a panic guard, drain UI requests and observe the IME editor only after
+    /// this pass's commands ran. Screenshots are offered to `capture::issue`, which issues only
+    /// on an accepted pass.
     fn ui_inner(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         if self.ui_clock_offset.is_none() {
             let egui_time = ui.ctx().input(|input| input.time);
@@ -2562,6 +2583,9 @@ impl FilmcraftApp {
 }
 
 impl eframe::App for FilmcraftApp {
+    /// Snapshot this callback's fresh surface geometry, optionally synthesize macOS ctrl-click
+    /// and agent input, and offer at most one queued synthetic step. A step already preserved by
+    /// hidden logic callbacks is not appended twice; a real UI pass clears it.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         self.native_window_focused = Some(raw_input.focused);
         capture::note_raw_geometry(self, ctx, raw_input);
@@ -2621,11 +2645,15 @@ impl eframe::App for FilmcraftApp {
         }
     }
 
+    /// Eframe's hidden logic callback: run the logic pass, sync the IME target context, then
+    /// suspend reset state because a logic-only callback is never a UI pass.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.logic_inner(ctx);
         self.finish_ime_reset_logic(ctx);
     }
 
+    /// Cancel outstanding screenshots with one error reply each, end per-viewport IME tracker and
+    /// reset state, and shut the session down so its recovery journal is flushed or removed.
     fn on_exit(&mut self) {
         // Late screenshot callbacks now find a dropped slot and write nothing; clients get one error.
         capture::cancel_all(self);
@@ -2639,6 +2667,8 @@ impl eframe::App for FilmcraftApp {
         self.session.shutdown();
     }
 
+    /// Eframe's UI entry: begin this pass's IME reset state, suspend custom controls when no
+    /// eligible editor owns input, draw `ui_inner`, then run end-of-pass IME reconciliation.
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.ime_reset.begin_pass(&ctx);
@@ -3438,6 +3468,7 @@ mod lifecycle_synthetic_tests {
 
     use super::FilmcraftApp;
 
+    /// Extract the pointer-moved positions from a raw event batch, for synthetic-input tests.
     fn pointer_events(events: &[Event]) -> Vec<egui::Pos2> {
         events
             .iter()

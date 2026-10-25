@@ -1,4 +1,4 @@
-//! The Settings dialog (app menu ▸ Settings ▸ <category>; Edit ▸ Preferences in the in-window
+//! The Settings dialog (app menu ▸ Settings ▸ `<category>`; Edit ▸ Preferences in the in-window
 //! menu bar; General is Cmd+,). One window titled "Preferences": the category list on the left,
 //! the category's fields on the right, Help / Reset… / Cancel / OK at the bottom. The page layout
 //! comes from the engine's field schema ([`filmcraft_engine::settings::categories`]); edits go to a

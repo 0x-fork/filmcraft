@@ -269,7 +269,7 @@ pub fn fmt(template: &str, args: &[(&str, &str)]) -> String {
 const JAPANESE_SAMPLE: &str = "日本語ファイル編集あア";
 
 /// Installed families preferred for Japanese interface text, best first (Gothic / sans-serif faces
-/// read best at menu sizes). Any other installed face that covers [`JAPANESE_SAMPLE`] is used if
+/// read best at menu sizes). Any other installed face that covers `JAPANESE_SAMPLE` is used if
 /// none of these is present.
 const PREFERRED_JAPANESE: &[&str] = &[
     "Hiragino Sans",
@@ -314,7 +314,7 @@ pub fn system_japanese_font() -> Option<Arc<egui::FontData>> {
 }
 
 /// Whether the craft-fonts build input (empty unless built with `CRAFT_FONTS_DIR`) supplies a
-/// Japanese interface font: some craft-fonts face covers [`JAPANESE_SAMPLE`]. `theme::install` adds
+/// Japanese interface font: some craft-fonts face covers `JAPANESE_SAMPLE`. `theme::install` adds
 /// these faces to every font family, so nothing else needs installing (and no system scan runs).
 pub fn craft_japanese_font() -> bool {
     filmcraft_text::fonts::craft_japanese().next().is_some()

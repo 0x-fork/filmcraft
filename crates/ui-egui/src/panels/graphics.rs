@@ -10,7 +10,7 @@
 //!   field. Double-clicking a text layer with the Selection tool also edits it.
 //! - **Selection tool:** click selects a layer (bounding box with handles and anchor point); drag
 //!   moves it; drag the anchor point to move that alone. What a handle does depends on the layer
-//!   (see [`HandleDrag`]): point text scales about its anchor point, a paragraph-text box is
+//!   (see `HandleDrag`): point text scales about its anchor point, a paragraph-text box is
 //!   resized and its text re-wraps, a shape stretches away from its opposite side. A rectangle
 //!   also has four small circles just inside its corners: dragging one rounds all four corners.
 //! - **Rectangle / Ellipse tools:** drag out a shape. **Pen tool:** click points; click the first
@@ -205,7 +205,7 @@ fn next_boundary(s: &str, i: usize) -> usize {
 #[derive(Clone, Copy, Debug)]
 enum DragKind {
     Move,
-    /// Handle `n` of the layer's box (see [`handle_points`] and [`HandleDrag`]).
+    /// Handle `n` of the layer's box (see [`handle_points`] and `HandleDrag`).
     Handle(usize),
     /// The layer's anchor point: it moves, the layer stays where it is.
     Anchor,
@@ -1261,6 +1261,7 @@ struct PendingImeEdit {
     application_mutation: bool,
 }
 
+/// Build the receipt for committed `text` at `cursor`/`anchor`; no preedit text is attached.
 fn ime_stamp(text: &str, cursor: usize, anchor: usize) -> ImeMutationStamp {
     ImeMutationStamp::from_committed(text, cursor, anchor, None)
 }
@@ -1296,6 +1297,8 @@ fn current_layer_text(session: &Session, clip: u64, layer: usize) -> Option<&str
     effect.params.get("text")?.text_ref_at(it.source_time_at(t))
 }
 
+/// Stable uid of the enabled layer at index `layer`, or 0 when that layer has no uid; `None`
+/// when the clip, item or layer is missing or disabled.
 fn current_layer_uid(session: &Session, clip: u64, layer: usize) -> Option<u64> {
     current_layer_effect(session, clip, layer).map(|effect| effect.layer.as_ref().map_or(0, |x| x.uid))
 }
@@ -1339,6 +1342,8 @@ fn layer_fingerprint(effect: &EffectInstance) -> u64 {
     h
 }
 
+/// Static-identity fingerprint of the enabled layer at `layer`, or `None` when it is not
+/// present. Editable text is excluded by [`layer_fingerprint`], so typing does not change it.
 fn current_layer_fingerprint(session: &Session, clip: u64, layer: usize) -> Option<u64> {
     current_layer_effect(session, clip, layer).map(layer_fingerprint)
 }
@@ -1386,6 +1391,7 @@ const LAYOUT_PARAMS: &[&str] = &[
     "rotation",
 ];
 
+/// Fold `bytes` into the FNV-1a-style hash accumulator `h`, allowing callers to chain fields.
 fn hash_bytes(h: &mut u64, bytes: &[u8]) {
     for &b in bytes {
         *h ^= u64::from(b);
@@ -1393,6 +1399,8 @@ fn hash_bytes(h: &mut u64, bytes: &[u8]) {
     }
 }
 
+/// Hash the bits of a finite `f64`; all non-finite values share one representation so NaN
+/// payloads or evaluation details cannot change a layout identity.
 fn hash_f64(h: &mut u64, v: f64) {
     // Normalise non-finite values: NaN is "auto" for point parameters and must not make the
     // fingerprint depend on payload bits or an evaluation detail.
@@ -1403,10 +1411,13 @@ fn hash_f64(h: &mut u64, v: f64) {
     }
 }
 
+/// Hash an `f32` widened to `f64`, keeping the non-finite normalization of [`hash_f64`].
 fn hash_f32(h: &mut u64, v: f32) {
     hash_f64(h, f64::from(v));
 }
 
+/// Hash an optional value with an explicit presence byte, followed by the inner value only
+/// when it is present. This keeps `None` distinct from any hashed `Some` payload.
 fn hash_option<T>(h: &mut u64, value: Option<T>, hash: impl FnOnce(&mut u64, T)) {
     match value {
         Some(v) => {
@@ -1417,6 +1428,9 @@ fn hash_option<T>(h: &mut u64, value: Option<T>, hash: impl FnOnce(&mut u64, T))
     }
 }
 
+/// Hash a layout parameter by kind and value. Non-finite floats normalize through
+/// [`hash_f64`]; path payloads contribute only a tag because layout parameters do not use
+/// mask paths.
 fn hash_param_value(h: &mut u64, value: &ParamValue) {
     match value {
         ParamValue::Float(v) => {
@@ -1459,6 +1473,10 @@ fn hash_param_value(h: &mut u64, value: &ParamValue) {
     }
 }
 
+/// Fingerprint every layout-affecting value of `effect` at tick `t`: the layout parameters
+/// evaluated at the playhead, character runs and pin data. Non-finite floats normalize, and
+/// the committed text bytes are not hashed directly, so caret/selection changes do not churn
+/// the fingerprint; a value or run change that can move the caret does.
 fn layout_fingerprint(effect: &EffectInstance, t: Tick) -> u64 {
     let mut h: u64 = 0x9e37_79b9_7f4a_7c15;
     hash_bytes(&mut h, effect.effect.as_bytes());
@@ -1511,6 +1529,8 @@ fn layout_fingerprint(effect: &EffectInstance, t: Tick) -> u64 {
     h
 }
 
+/// Layout fingerprint of the layer at `layer` evaluated at the playhead's source time;
+/// `None` when the sequence, clip or layer is missing.
 fn current_layer_layout_fingerprint(session: &Session, clip: u64, layer: usize) -> Option<u64> {
     let sequence = session.active_sequence()?;
     let t = session.playhead();
@@ -1574,6 +1594,10 @@ fn reconcile_gfx_edit(app: &mut FilmcraftApp) {
     }
 }
 
+/// Owner for the graphics text editor: sequence, clip and stable layer uid, falling back to
+/// the numeric layer index only when `uid` is 0. The replacement epoch is explicit. Caret,
+/// selection, text, revision, geometry, visual order and pointers are excluded so those
+/// changes do not churn the IME owner.
 fn graphics_ime_target(sequence: u64, clip: u64, layer: usize, uid: u64, replacement_epoch: u64) -> ImeTarget {
     // The owner excludes caret, selection, text, revision, geometry, visual order and pointers.
     // `uid` is the stable layer component id; zero means "none", where the layer index is the
@@ -1583,6 +1607,8 @@ fn graphics_ime_target(sequence: u64, clip: u64, layer: usize, uid: u64, replace
     ImeTarget::new(egui::Id::unique(("filmcraft.graphics.ime", sequence, clip, component_uid, component_index)), replacement_epoch)
 }
 
+/// Current editor owner for the layer, using its live uid and the app's replacement epoch;
+/// `None` when there is no active sequence or the layer is unavailable.
 fn current_graphics_ime_target(app: &FilmcraftApp, clip: u64, layer: usize) -> Option<ImeTarget> {
     let sequence = app.session.state.active_sequence?.0;
     let uid = current_layer_uid(&app.session, clip, layer)?;
@@ -1597,6 +1623,8 @@ pub(crate) fn current_reset_destination(app: &FilmcraftApp) -> Option<crate::ime
     Some(local_reset_destination(app, ed, text, target))
 }
 
+/// Build the admission destination from the local edit and current document epoch, stamping
+/// the committed `text` while carrying the caret and anchor separately.
 fn local_reset_destination(app: &FilmcraftApp, ed: &GfxEdit, text: &str, target: ImeTarget) -> crate::ime_reset::Destination {
     crate::ime_reset::Destination { document: app.session.document_epoch, target, caret: ed.caret, anchor: ed.anchor, text: ime_text_stamp(text) }
 }
@@ -1634,10 +1662,13 @@ struct TextEditState {
 }
 
 impl TextEditState {
+    /// The caret/anchor pair sorted into a forward `(start, end)` selection range.
     fn selection(&self) -> (usize, usize) {
         (self.ed.caret.min(self.ed.anchor), self.ed.caret.max(self.ed.anchor))
     }
 
+    /// Delete the sorted selection in place, collapse caret and anchor to its start and report
+    /// whether anything was removed. This does not set the batch's changed flags; callers do.
     fn delete_selection(&mut self) -> bool {
         let (a, b) = self.selection();
         if a == b {
@@ -1696,6 +1727,8 @@ fn finish_text_event(app: &mut FilmcraftApp, ui: &egui::Ui, state: &TextEditStat
     }
 }
 
+/// Track this viewport's IME preedit target. Empty preedit becomes `TerminalPending` so a
+/// following empty commit still belongs to the same composition; non-empty becomes `Active`.
 fn apply_preedit(app: &mut FilmcraftApp, ui: &egui::Ui, target: ImeTarget, text: &str) {
     app.ime_composition_viewport = Some(ui.ctx().viewport_id());
     if text.is_empty() {
@@ -1705,6 +1738,9 @@ fn apply_preedit(app: &mut FilmcraftApp, ui: &egui::Ui, target: ImeTarget, text:
     }
 }
 
+/// Apply a UTF-8 byte-count surrounding deletion after the staleness check. Only whole
+/// characters fully inside the reported byte ranges are removed, the selection is preserved
+/// and accepted deletions record an IME receipt; a stale event skips.
 fn apply_delete_surrounding_bytes(app: &FilmcraftApp, state: &mut TextEditState, target: ImeTarget, before_bytes: usize, after_bytes: usize) -> EventFlow {
     if ime_event_is_stale(app, target) {
         return EventFlow::Skip;
@@ -1719,6 +1755,9 @@ fn apply_delete_surrounding_bytes(app: &FilmcraftApp, state: &mut TextEditState,
     EventFlow::Applied
 }
 
+/// Apply a character-count surrounding deletion after the staleness check. The selection is
+/// preserved, deletion stops at either text end and an accepted deletion records an IME
+/// receipt; a stale event skips.
 fn apply_delete_surrounding_chars(app: &FilmcraftApp, state: &mut TextEditState, target: ImeTarget, before_chars: usize, after_chars: usize) -> EventFlow {
     if ime_event_is_stale(app, target) {
         return EventFlow::Skip;
@@ -1734,6 +1773,9 @@ fn apply_delete_surrounding_chars(app: &FilmcraftApp, state: &mut TextEditState,
     EventFlow::Applied
 }
 
+/// Insert application-origin typing or paste: strip control characters except newline,
+/// replace the selection, move the caret to the end and mark the batch as an ordinary
+/// application mutation. Input that sanitizes to nothing is skipped.
 fn apply_text_input(state: &mut TextEditState, input: &str) -> EventFlow {
     let s: String = input.chars().filter(|c| !c.is_control() || *c == '\n').collect();
     if s.is_empty() {
@@ -1749,6 +1791,9 @@ fn apply_text_input(state: &mut TextEditState, input: &str) -> EventFlow {
     EventFlow::Applied
 }
 
+/// Apply an IME commit after the staleness check: clear the composition, insert sanitized
+/// committed text, or delete the selection when the commit is empty. Text changes record an
+/// IME receipt; a stale commit skips.
 fn apply_ime_commit(app: &mut FilmcraftApp, state: &mut TextEditState, target: ImeTarget, input: &str) -> EventFlow {
     if ime_event_is_stale(app, target) {
         return EventFlow::Skip;
@@ -1775,6 +1820,8 @@ fn apply_ime_commit(app: &mut FilmcraftApp, state: &mut TextEditState, target: I
     EventFlow::Applied
 }
 
+/// Copy the sorted selection, and for Cut delete it and mark an application mutation. An
+/// empty selection is a no-op.
 fn apply_copy_cut(ui: &egui::Ui, state: &mut TextEditState, cut: bool) -> EventFlow {
     let (a, b) = state.selection();
     if a < b {
@@ -1787,6 +1834,8 @@ fn apply_copy_cut(ui: &egui::Ui, state: &mut TextEditState, cut: bool) -> EventF
     EventFlow::Applied
 }
 
+/// Caret destination for Left: with no Shift collapse a selection to its start, otherwise
+/// move to the line start (Command), previous word (Alt) or previous character boundary.
 fn left_target(state: &TextEditState, layout: &filmcraft_text::Layout, shift: bool, command: bool, alt: bool) -> usize {
     let (a, _) = state.selection();
     if !shift && state.ed.caret != state.ed.anchor {
@@ -1800,6 +1849,8 @@ fn left_target(state: &TextEditState, layout: &filmcraft_text::Layout, shift: bo
     }
 }
 
+/// Caret destination for Right: with no Shift collapse a selection to its end, otherwise
+/// move to the line end (Command), next word (Alt) or next character boundary.
 fn right_target(state: &TextEditState, layout: &filmcraft_text::Layout, shift: bool, command: bool, alt: bool) -> usize {
     let (_, b) = state.selection();
     if !shift && state.ed.caret != state.ed.anchor {
@@ -1813,6 +1864,8 @@ fn right_target(state: &TextEditState, layout: &filmcraft_text::Layout, shift: b
     }
 }
 
+/// Caret destination for Up/Down: hit-test the same x on the adjacent line's baseline,
+/// clamping to the text start/end when there is no line in that direction.
 fn vertical_target(state: &TextEditState, layout: &filmcraft_text::Layout, up: bool) -> usize {
     let (x, _, line) = layout.caret(state.ed.caret);
     let target = if up { line.checked_sub(1) } else { Some(line + 1).filter(|next| *next < layout.lines.len()) };
@@ -1823,6 +1876,9 @@ fn vertical_target(state: &TextEditState, layout: &filmcraft_text::Layout, up: b
     }
 }
 
+/// Apply a layout-derived caret destination after re-clamping it to a UTF-8 boundary in the
+/// current (possibly already edited) text. Without Shift the anchor collapses to the caret;
+/// any actual selection change invalidates the IME composition.
 fn apply_moved_caret(app: &mut FilmcraftApp, state: &mut TextEditState, moved: Option<usize>, shift: bool) {
     if let Some(m) = moved {
         let previous_selection = (state.ed.caret, state.ed.anchor);
@@ -1839,6 +1895,9 @@ fn apply_moved_caret(app: &mut FilmcraftApp, state: &mut TextEditState, moved: O
     }
 }
 
+/// Apply one non-IME key press to the local edit: Enter/Backspace/Delete mutate text,
+/// Command+A selects all and arrows/Home/End move the caret. Text edits mark an application
+/// mutation; Escape stops editing and suspends IME input. Only Escape returns `Skip`.
 fn apply_key_event(
     app: &mut FilmcraftApp,
     ui: &egui::Ui,
@@ -2132,6 +2191,8 @@ fn char_boundary_ceil(s: &str, mut i: usize) -> usize {
     i
 }
 
+/// Move `i` to a character boundary and then back up to `n` whole characters, stopping at
+/// the start. Hostile offsets and counts are clamped instead of slicing inside a character.
 fn prev_n_chars(s: &str, mut i: usize, n: usize) -> usize {
     i = char_boundary_floor(s, i);
     for _ in 0..n {
@@ -2146,6 +2207,8 @@ fn prev_n_chars(s: &str, mut i: usize, n: usize) -> usize {
     i
 }
 
+/// Move `i` to a character boundary and then forward up to `n` whole characters, stopping at
+/// the end. Hostile offsets and counts are clamped instead of slicing inside a character.
 fn next_n_chars(s: &str, mut i: usize, n: usize) -> usize {
     i = char_boundary_ceil(s, i);
     for _ in 0..n {
@@ -2304,6 +2367,8 @@ impl Ctx<'_> {
             self.set(id, json!(nv));
         }
     }
+    /// Draw an inline numeric field without a label row or stopwatch, register it for automation
+    /// and emit the edited value through `Ctx::set` when it changes.
     fn number_in(&mut self, vui: &mut egui::Ui, label: &str, field: NumberField<'_>) {
         let NumberField { id, speed, range, decimals, unit } = field;
         let v = pv(self.e, id, self.mt).as_f64().unwrap_or(0.0);
@@ -2363,6 +2428,9 @@ impl Ctx<'_> {
             self.set(id, json!(format!("#{r8:02x}{g8:02x}{b8:02x}")));
         }
     }
+    /// Draw a combo box for a choice parameter, register it for automation and emit the selected
+    /// index through `Ctx::set` when it changes. An out-of-range current value displays as an
+    /// empty selection.
     fn choice(&mut self, vui: &mut egui::Ui, id: &str, label: &str, opts: &[&str], width: f32) {
         let cur = match pv(self.e, id, self.mt) {
             ParamValue::Choice(c) => c as usize,
@@ -2950,6 +3018,8 @@ mod ime_byte_delete_tests {
         surrounding_byte_deletion_ranges,
     };
 
+    /// Floor/ceil byte offsets clamp to UTF-8 character boundaries, including offsets past the
+    /// end and offsets inside a multi-byte character.
     #[test]
     fn byte_boundaries_never_split_a_code_point() {
         let s = "aé😀z"; // 1 + 2 + 4 + 1 bytes
@@ -2960,6 +3030,8 @@ mod ime_byte_delete_tests {
         assert_eq!(char_boundary_floor(s, 999), s.len());
     }
 
+    /// Byte-count surrounding deletion removes only whole characters: a partial é or emoji byte
+    /// count deletes nothing, and the selection itself is always excluded.
     #[test]
     fn deleting_surrounding_bytes_leaves_partial_characters() {
         let s = "aé😀z"; // a=1, é=1..3, 😀=3..7, z=7..8
@@ -2978,6 +3050,8 @@ mod ime_byte_delete_tests {
         assert_eq!(surrounding_byte_deletion_ranges(s, 1, 3, 1, 4), (0..1, 3..7));
     }
 
+    /// Applying before/after surrounding deletions preserves a reversed selection's direction
+    /// while shifting both endpoints by the preceding deletion.
     #[test]
     fn surrounding_deletion_keeps_reversed_selection_direction() {
         let mut text = "aé😀z".to_string();
@@ -2988,6 +3062,8 @@ mod ime_byte_delete_tests {
         assert_eq!((ed.caret, ed.anchor), (2, 0), "primary caret stays after the anchor");
     }
 
+    /// Hostile `gfxEdit` caret/anchor offsets inside multi-byte characters clamp to boundaries
+    /// without panicking.
     #[test]
     fn hostile_edit_offsets_are_clamped_to_char_boundaries() {
         let s = "é😀";
@@ -2997,6 +3073,8 @@ mod ime_byte_delete_tests {
         assert_eq!(s.get(ed.caret..ed.anchor), Some("é"));
     }
 
+    /// Character-count deletion stops at both text ends and never splits a character, even for
+    /// counts larger than the text.
     #[test]
     fn character_deletion_is_bounded() {
         let s = "aé😀z".to_string();
@@ -3006,6 +3084,8 @@ mod ime_byte_delete_tests {
         assert_eq!(next_n_chars(&s, 1, 1), 3);
     }
 
+    /// The IME context tracker keeps per-viewport generations, leaves other viewports untouched
+    /// and drops a closed viewport's state when it is observed again.
     #[test]
     fn tracker_state_is_scoped_per_viewport_and_closed_viewports_are_dropped() {
         use egui::ViewportId;
@@ -3028,6 +3108,8 @@ mod ime_byte_delete_tests {
         assert_ne!(reopened.context_generation, second.context_generation, "closed viewport state is dropped");
     }
 
+    /// The graphics IME owner prefers stable uid identity, falls back to the layer index only
+    /// without a uid, and separates sequence and replacement epochs.
     #[test]
     fn ime_owner_uses_stable_component_identity_and_explicit_replacement() {
         let a = graphics_ime_target(7, 11, 3, 42, 5);

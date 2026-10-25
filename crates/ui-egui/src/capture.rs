@@ -69,12 +69,20 @@ pub(crate) struct SurfaceGeometry {
 }
 
 impl PartialEq for SurfaceGeometry {
+    /// Compares only the fields that change captured pixels: viewport size, pixels per point and
+    /// the GPU texture limit. The presentation-only minimized/occluded flags are deliberately
+    /// ignored, so minimizing, occluding or losing window focus does not invalidate an issued
+    /// capture.
     fn eq(&self, other: &Self) -> bool {
         self.viewport == other.viewport && self.pixels_per_point == other.pixels_per_point && self.max_texture_side == other.max_texture_side
     }
 }
 
 impl SurfaceGeometry {
+    /// Snapshot the surface from a raw-input callback, reading the fresh `viewports`/`screen_rect`
+    /// geometry rather than the stale `InputState`. Missing or hostile fields fall back to
+    /// `previous` where possible; `None` means no usable zoom and pixels-per-point pair could be
+    /// established.
     fn from_raw(raw: &egui::RawInput, ctx: &egui::Context, previous: Option<Self>) -> Option<Self> {
         let info = raw.viewports.get(&raw.viewport_id).cloned().unwrap_or_default();
         let rect = info.inner_rect.or(raw.screen_rect);
@@ -99,6 +107,11 @@ impl SurfaceGeometry {
         Some(Self { viewport, pixels_per_point, max_texture_side, minimized, occluded })
     }
 
+    /// Pixel size the backend will present: viewport points scaled by pixels per point and
+    /// rounded. If either axis exceeds the texture limit, both axes shrink by the same factor to
+    /// a positive limit, matching wgpu's `surface_fit`; per-axis clamping would predict the wrong
+    /// image. A zero/unknown texture limit disables shrinking.
+    /// `None` when the viewport is missing, non-finite, empty or the size overflows `usize`.
     fn expected_size(self) -> Option<[usize; 2]> {
         let viewport = self.viewport?;
         if !viewport.x.is_finite() || !viewport.y.is_finite() || viewport.x <= 0.0 || viewport.y <= 0.0 {
@@ -158,6 +171,8 @@ impl SurfaceGeometry {
         if effective.is_finite() && effective > 0.0 { effective } else { native }
     }
 
+    /// Raw RGBA bytes of [`Self::expected_size`], checked for multiplication overflow; `None`
+    /// when the surface has no capturable size.
     fn expected_bytes(self) -> Option<usize> {
         let [width, height] = self.expected_size()?;
         width.checked_mul(height)?.checked_mul(std::mem::size_of::<egui::Color32>())
@@ -180,10 +195,13 @@ pub(crate) struct CaptureGeometry {
 }
 
 impl CaptureGeometry {
+    /// Pixel size implied by the bound surface geometry; `None` when it is not capturable.
     fn expected_size(self) -> Option<[usize; 2]> {
         self.surface.expected_size()
     }
 
+    /// Raw RGBA byte count implied by the bound surface, with the same overflow rule as
+    /// [`SurfaceGeometry::expected_bytes`].
     fn expected_bytes(self) -> Option<usize> {
         self.surface.expected_bytes()
     }
@@ -198,6 +216,9 @@ pub enum CropTarget {
 }
 
 impl CropTarget {
+    /// Resolve the named element against the accepted pass's automation registry. Only an element
+    /// drawn in the current pass with a finite, non-empty rectangle is accepted; a stale
+    /// previous-pass rectangle or an unknown id is an error, never a fallback to the whole window.
     fn resolve(&self, registry: &crate::automation::Registry) -> Result<[f32; 4], String> {
         let Self::Element(id) = self;
         let element = registry
@@ -243,19 +264,25 @@ pub(crate) struct Shots {
 }
 
 impl Shots {
+    /// True when no request is queued, in flight or completed-but-not-yet-drained.
     pub(crate) fn is_empty(&self) -> bool {
         self.requests.is_empty()
     }
 
+    /// True while at least one admitted request has not been handed to a `Screenshot` callback.
     fn has_unissued(&self) -> bool {
         self.requests.iter().any(|shot| !shot.issued)
     }
 
+    /// Sum of every request's byte reservation, including completed-but-undrained captures;
+    /// saturates instead of overflowing.
     fn reserved(&self) -> usize {
         self.requests.iter().fold(0usize, |sum, shot| sum.saturating_add(shot.reserved))
     }
 }
 
+/// Allocate the next request token, wrapping after `u64::MAX` and skipping zero so a token is
+/// always usable as a presence marker.
 fn next_token(shots: &mut Shots) -> u64 {
     let mut token = shots.token.wrapping_add(1);
     if token == 0 {
@@ -265,18 +292,24 @@ fn next_token(shots: &mut Shots) -> u64 {
     token
 }
 
+/// Build the JSON error reply carrying `token`, so the client can match a rejection to the
+/// request it sent.
 fn error_reply(token: u64, message: impl std::fmt::Display) -> Value {
     json!({"ok": false, "error": message.to_string(), "request": token})
 }
 
+/// Send an error reply for `token`, ignoring a client that has already disconnected.
 fn reject(reply: Sender<Value>, token: u64, message: impl std::fmt::Display) {
     let _ = reply.send(error_reply(token, message));
 }
 
+/// The active sequence id (none when no sequence is open) and project revision that a capture
+/// is bound to.
 fn active_document(app: &FilmcraftApp) -> DocumentId {
     DocumentId { sequence: app.session.state.active_sequence.map(|id| id.0), revision: app.session.revision }
 }
 
+/// The widget currently holding keyboard focus, part of the capture identity.
 fn current_focus(ctx: &egui::Context) -> Option<egui::Id> {
     ctx.memory(|memory| memory.focused())
 }
@@ -385,6 +418,9 @@ pub(crate) fn admit(app: &mut FilmcraftApp, ctx: &egui::Context, path: Option<St
     ctx.request_repaint();
 }
 
+/// Why the request's bound document/revision or keyboard focus no longer matches. `None`
+/// means identity is unchanged; a mismatch must reject rather than save pixels from another
+/// document or focus.
 fn identity_reason(app: &FilmcraftApp, ctx: &egui::Context, shot: &Shot) -> Option<&'static str> {
     if active_document(app) != shot.document {
         Some("the document or project revision changed while the capture was queued")
@@ -395,6 +431,8 @@ fn identity_reason(app: &FilmcraftApp, ctx: &egui::Context, shot: &Shot) -> Opti
     }
 }
 
+/// Why the live surface snapshot or capture epoch differs from the one this request was
+/// admitted or issued against. `None` means the geometry is still the one it reserved for.
 fn geometry_reason(app: &FilmcraftApp, shot: &Shot) -> Option<&'static str> {
     if app.capture_geometry != Some(shot.geometry) || app.capture_epoch != shot.geometry_epoch {
         Some("the window geometry changed while the capture was queued")
@@ -403,6 +441,10 @@ fn geometry_reason(app: &FilmcraftApp, shot: &Shot) -> Option<&'static str> {
     }
 }
 
+/// Re-admit an unissued request against the current geometry: cancel its old slot, check the
+/// per-image and aggregate budgets including every other request, and reset its settled
+/// frames, crop misses and ready time. On failure nothing is changed and the caller rejects
+/// it; on success the request is unissued again and must collect fresh settling passes.
 fn retry_geometry(app: &mut FilmcraftApp, ctx: &egui::Context, index: usize) -> Result<(), String> {
     let now = Instant::now();
     let current = app.capture_geometry.ok_or_else(|| "the window geometry is no longer known".to_string())?;
@@ -455,6 +497,10 @@ enum IssueOutcome {
     Issued,
 }
 
+/// Decide one settled request: reject on identity change, ask for a geometry retry, defer a
+/// not-yet-drawn crop target for a bounded number of accepted passes, or issue the screenshot
+/// with the crop resolved from this pass. The callback is taken at most once and `issued` is
+/// set only when the viewport command was sent.
 fn try_issue_shot(app: &mut FilmcraftApp, ctx: &egui::Context, index: usize) -> IssueOutcome {
     let shot = &app.shots.requests[index];
     if let Some(reason) = identity_reason(app, ctx, shot) {
@@ -556,6 +602,10 @@ enum DrainStep {
     Complete(Result<Arc<ColorImage>, CaptureError>),
 }
 
+/// Classify one drain position before removing anything: check the deadline first, then
+/// identity, then geometry (an unissued request keeps waiting for a retry, while in-flight
+/// stale pixels are rejected), and finally take a completed slot. `Keep` leaves the request
+/// in place and advances the scan.
 fn drain_step(app: &FilmcraftApp, ctx: &egui::Context, index: usize, now: Instant) -> DrainStep {
     let shot = &app.shots.requests[index];
     if now >= shot.deadline {
@@ -582,6 +632,8 @@ fn drain_step(app: &FilmcraftApp, ctx: &egui::Context, index: usize, now: Instan
     DrainStep::Complete(result)
 }
 
+/// Remove one request, cancel its slot and send its error reply; later requests shift down by
+/// one index.
 fn remove_and_reject(app: &mut FilmcraftApp, index: usize, message: impl std::fmt::Display) {
     let shot = app.shots.requests.remove(index);
     if let Some(slot) = shot.slot {
@@ -609,6 +661,9 @@ fn image_reply(shot: &Shot, image: &ColorImage) -> Value {
     reply
 }
 
+/// Cancel any remaining callback, turn the captured image or error into the reply and send it
+/// exactly once. A pixel size that differs from the reserved size becomes an error reply
+/// instead of writing an image for the wrong surface.
 fn complete_shot(mut shot: Shot, result: Result<Arc<ColorImage>, CaptureError>) {
     if let Some(slot) = shot.slot.take() {
         slot.cancel();
@@ -672,10 +727,12 @@ mod tests {
     use crate::automation::Registry;
     use filmcraft_engine::Session;
 
+    /// App with a default session, for capture-state unit tests.
     fn app() -> FilmcraftApp {
         FilmcraftApp::new(Session::default())
     }
 
+    /// A fixed 800×600, 1 px/pt capture identity for the app's current document with no focus.
     fn geometry(app: &FilmcraftApp) -> CaptureGeometry {
         CaptureGeometry {
             surface: SurfaceGeometry {
@@ -690,14 +747,19 @@ mod tests {
         }
     }
 
+    /// Raw input reporting an 800×600 root viewport.
     fn raw() -> egui::RawInput {
         egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))), ..Default::default() }
     }
 
+    /// Admit one uncropped in-memory capture at the default test surface; return its reply
+    /// receiver and token.
     fn admit_one(app: &mut FilmcraftApp, ctx: &egui::Context) -> (Receiver<Value>, u64) {
         admit_with_surface(app, ctx, geometry(app).surface)
     }
 
+    /// Bind `surface` as the current capture geometry, admit one uncropped in-memory capture and
+    /// return its reply receiver and token.
     fn admit_with_surface(app: &mut FilmcraftApp, ctx: &egui::Context, surface: SurfaceGeometry) -> (Receiver<Value>, u64) {
         app.capture_geometry = Some(CaptureGeometry { surface, document: active_document(app), focus: None });
         let (tx, rx) = channel();
@@ -706,6 +768,8 @@ mod tests {
         (rx, token)
     }
 
+    /// `note_raw_geometry` uses the fresh raw 2x viewport (1600×1200) rather than the previous
+    /// pass's input and bumps the capture epoch.
     #[test]
     fn raw_geometry_uses_the_fresh_surface_not_the_previous_pass() {
         let ctx = egui::Context::default();
@@ -718,6 +782,8 @@ mod tests {
         assert!(app.capture_epoch > 0);
     }
 
+    /// Oversized surfaces shrink both axes by one factor to the texture limit and crop at the
+    /// matching rendered scale; a surface within the limit keeps the exact native scale.
     #[test]
     fn oversized_windows_predict_the_backends_uniformly_scaled_surface() {
         let app = app();
@@ -734,6 +800,8 @@ mod tests {
         assert_eq!(surface.captured_pixels_per_point(), 1.0, "an uncapped surface keeps the native scale exactly");
     }
 
+    /// Unusable viewport data preserves a valid native scale, while an invalid native scale falls
+    /// back to 1.0 so a crop can never divide by zero.
     #[test]
     fn captured_scale_falls_back_when_geometry_is_unusable() {
         let app = app();
@@ -752,6 +820,8 @@ mod tests {
         assert_eq!(surface.captured_pixels_per_point(), 1.0);
     }
 
+    /// A crop in points selects the region where a uniformly downscaled surface actually drew it,
+    /// using the rendered rather than the native scale.
     #[test]
     fn downscaled_capture_crops_with_the_rendered_scale() {
         let ctx = egui::Context::default();
@@ -798,6 +868,8 @@ mod tests {
         );
     }
 
+    /// A 1.5x surface whose point size rounds up by one window pixel is still uncapped, so its
+    /// crop keeps the exact 1.5 scale instead of a slightly shrunk one.
     #[test]
     fn uncapped_hidpi_capture_keeps_the_native_scale() {
         let ctx = egui::Context::default();
@@ -838,6 +910,8 @@ mod tests {
         assert!(decoded.pixels().all(|pixel| *pixel == image::Rgba([0, 255, 0, 255])), "the HiDPI crop must select the green region at the native scale");
     }
 
+    /// Minimized, occluded and window-focus flags do not bump the epoch or reject an already
+    /// issued capture; its pixels are still delivered once.
     #[test]
     fn presentation_flags_do_not_invalidate_an_issued_capture() {
         let ctx = egui::Context::default();
@@ -867,6 +941,8 @@ mod tests {
         assert_eq!(reply["ok"], true, "{reply}");
     }
 
+    /// Admission counts completed-but-undrained requests, so a new request over `MAX_REQUESTS`
+    /// is rejected instead of replacing a slot that still owes a reply.
     #[test]
     fn admission_counts_outstanding_and_completed_but_undrained_requests() {
         let ctx = egui::Context::default();
@@ -883,6 +959,7 @@ mod tests {
         assert!(reply["error"].as_str().unwrap_or_default().contains("outstanding"), "{reply}");
     }
 
+    /// A timed-out request replies once; its late callback cannot produce a second reply.
     #[test]
     fn a_late_completion_after_timeout_does_not_write_or_reply_twice() {
         let ctx = egui::Context::default();
@@ -899,6 +976,8 @@ mod tests {
         assert!(rx.try_recv().is_err(), "a late image must not produce another reply");
     }
 
+    /// A near-per-image-limit surface is rejected before any slot exists because its crop/encode
+    /// reservation alone exceeds the aggregate bound.
     #[test]
     fn near_limit_images_are_rejected_for_encode_buffer_memory() {
         let ctx = egui::Context::default();
@@ -925,6 +1004,8 @@ mod tests {
         assert!(admitted_bytes([8000, 4000]).is_some_and(|bytes| bytes > MAX_TOTAL_BYTES));
     }
 
+    /// A crop resolves only from the current pass's registry; a stale rect and a missing id both
+    /// error rather than using old coordinates.
     #[test]
     fn a_crop_is_resolved_from_the_current_pass_not_the_previous_one() {
         let mut registry = Registry::default();
@@ -939,6 +1020,8 @@ mod tests {
         assert!(CropTarget::Element("panel.missing".into()).resolve(&registry).is_err());
     }
 
+    /// Issuing waits for the accepted final pass of a multipass layout, not the discarded first
+    /// pass.
     #[test]
     fn issue_runs_on_the_accepted_final_pass_of_a_multipass_layout() {
         let ctx = egui::Context::default();
@@ -960,6 +1043,8 @@ mod tests {
         assert!(app.shots.requests[0].issued, "the accepted pass must issue the capture");
     }
 
+    /// `issue` consumes `monitor_inexact`, so the signal cannot stay sticky and delay later
+    /// screenshots until the five-second settle maximum.
     #[test]
     fn monitor_inexact_is_consumed_by_each_issue_attempt() {
         let ctx = egui::Context::default();
@@ -969,6 +1054,8 @@ mod tests {
         assert!(!app.monitor_inexact, "a sticky flag would delay every later screenshot by up to five seconds");
     }
 
+    /// An unissued request follows a geometry change: its expected size and budget are recomputed
+    /// and it waits for fresh settling passes before issuing.
     #[test]
     fn a_geometry_change_retries_an_unissued_capture_with_new_budget() {
         let ctx = egui::Context::default();
@@ -987,6 +1074,8 @@ mod tests {
         assert!(!app.shots.requests[0].issued, "the retry waits for its own settling passes");
     }
 
+    /// When a resize pushes both queued shots over the aggregate budget, each is rejected with
+    /// its own token and removal of the first cannot shift the second's index.
     #[test]
     fn mixed_order_geometry_failures_reject_every_shot_without_shifting_indices() {
         let ctx = egui::Context::default();

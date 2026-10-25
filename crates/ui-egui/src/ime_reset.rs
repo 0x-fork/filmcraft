@@ -24,6 +24,8 @@ pub(crate) struct OutputContext {
 }
 
 impl OutputContext {
+    /// Snapshot the owner/generation/purpose triple that identifies one published custom IME
+    /// output.
     pub(crate) fn of(ime: &egui::output::IMEOutput) -> Self {
         Self { owner: ime.owner, generation: ime.context_generation, purpose: ime.purpose }
     }
@@ -56,27 +58,39 @@ pub(crate) struct State {
 }
 
 impl State {
+    /// Start a pass for `ctx`'s viewport and clear the per-pass published-output record, so
+    /// `finish` cannot mistake a previous pass's descriptor for this pass's.
     pub(crate) fn begin_pass(&mut self, ctx: &Context) {
         self.viewport = ctx.viewport_id();
         self.custom_output = None;
     }
 
+    /// Whether a reset fence still guards `viewport`. While blocked, IME input for the custom
+    /// editor must not be admitted.
     pub(crate) fn blocked(&self, viewport: ViewportId) -> bool {
         self.pending.contains_key(&viewport)
     }
 
+    /// The composition target being retired for `viewport`: the pending origin, or the last
+    /// completed origin until `terminal` clears it.
     pub(crate) fn origin(&self, viewport: ViewportId) -> Option<ImeTarget> {
         self.pending.get(&viewport).map(|p| p.origin).or_else(|| self.completed_origin.get(&viewport).copied())
     }
 
+    /// Whether `destination` differs from the last one remembered for `viewport`; false when
+    /// nothing has been remembered yet.
     pub(crate) fn incoming_changed(&self, viewport: ViewportId, destination: Destination) -> bool {
         self.incoming.get(&viewport).is_some_and(|old| *old != destination)
     }
 
+    /// Record the latest destination for `viewport`, so the next event can distinguish a real
+    /// target change from repeated observation of the same target.
     pub(crate) fn remember(&mut self, viewport: ViewportId, destination: Destination) {
         self.incoming.insert(viewport, destination);
     }
 
+    /// Acknowledge a terminal IME event for `viewport`: forget the incoming destination and
+    /// completed origin so stale targets cannot be reused.
     pub(crate) fn terminal(&mut self, viewport: ViewportId) {
         self.incoming.remove(&viewport);
         self.completed_origin.remove(&viewport);
@@ -100,6 +114,8 @@ impl State {
         }
     }
 
+    /// Move a pending fence to `Suspended` and drop its old output binding. Only an actually
+    /// eligible final descriptor in `finish` may rearm it; `sync`/`interrupt` reconciliation cannot.
     pub(crate) fn suspend(&mut self, viewport: ViewportId) {
         if let Some(pending) = self.pending.get_mut(&viewport) {
             pending.phase = Phase::Suspended;
@@ -107,10 +123,15 @@ impl State {
         }
     }
 
+    /// Whether the custom output published in this pass is the one recorded by `produced`.
+    /// False when no custom output was produced in this pass.
     pub(crate) fn owns_output(&self, ctx: &Context) -> bool {
         self.custom_output.is_some() && ctx.output(|out| out.ime.as_ref().map(OutputContext::of)) == self.custom_output
     }
 
+    /// Allocate a reset fence for the current viewport after clearing the previous fence's
+    /// output binding. Allocation failure leaves the phase `AllocationFailed`, which still
+    /// blocks input; a later real destination change can request again.
     fn request(ctx: &Context, pending: &mut Pending) {
         // A new fence invalidates any output context bound to the previous fence. Clearing it
         // also lets `finish` recognize this request as already made in this pass, even when an
@@ -130,6 +151,11 @@ impl State {
         }
     }
 
+    /// Validate a completion token and release the viewport's guard. The token must belong to
+    /// this viewport and equal the current `Awaiting` id, and `destination` must equal the
+    /// pending destination; `ctx.output` is deliberately not consulted because raw events run
+    /// before this pass publishes its descriptor. Any mismatch returns false and keeps the
+    /// guard. Success records the origin and destination for the next observation.
     pub(crate) fn complete(&mut self, ctx: &Context, id: ImeResetId, destination: Destination) -> bool {
         let viewport = ctx.viewport_id();
         let Some(pending) = self.pending.get(&viewport).copied() else { return false };
@@ -149,6 +175,8 @@ impl State {
         true
     }
 
+    /// Record the custom output descriptor published in this pass, for `finish` and
+    /// `owns_output` to compare against the actual output.
     pub(crate) fn produced(&mut self, key: OutputContext) {
         self.custom_output = Some(key);
     }
@@ -180,6 +208,8 @@ impl State {
         pending.output = custom;
     }
 
+    /// Forget all reset state for a closed viewport: pending fence, incoming destination and
+    /// completed origin.
     pub(crate) fn end_viewport(&mut self, viewport: ViewportId) {
         self.pending.remove(&viewport);
         self.incoming.remove(&viewport);
@@ -187,10 +217,14 @@ impl State {
     }
 }
 
+/// Temp-data key marking whether `viewport` is inside a UI pass rather than a hidden logic
+/// callback.
 fn mode_id(viewport: ViewportId) -> Id {
     Id::unique(("filmcraft-ime-reset-ui-pass", viewport))
 }
 
+/// Whether the current callback is a UI pass (between the installed begin/end-pass hooks)
+/// for this viewport, rather than `run_logic`. Defaults to false when no hook ran.
 pub(crate) fn in_ui_pass(ctx: &Context) -> bool {
     ctx.data(|data| data.get_temp::<bool>(mode_id(ctx.viewport_id()))).unwrap_or(false)
 }
@@ -222,15 +256,20 @@ pub(crate) fn install(ctx: &Context) {
 mod tests {
     use super::*;
 
+    /// A fixed destination for one editor owner with caret 3 and committed-text stamp 17.
     fn destination() -> Destination {
         Destination { document: 1, target: ImeTarget::new(Id::unique("film-model-editor"), 1), caret: 3, anchor: 3, text: 17 }
     }
 
+    /// Build the IME output a custom producer publishes for `destination` with the given
+    /// generation and purpose.
     fn output(destination: Destination, generation: u64, purpose: IMEPurpose) -> egui::output::IMEOutput {
         egui::output::IMEOutput::new(destination.target.owner, generation, purpose, egui::Rect::ZERO, egui::Rect::ZERO)
     }
 
     // These reducer tests use real Context requests/output, not native acknowledgements.
+    /// Run one real UI pass that publishes a custom `output` and calls `finish` as eligible;
+    /// return the reset request the Context attached, if any.
     fn custom_pass(ctx: &Context, state: &mut State, destination: Destination, generation: u64, purpose: IMEPurpose) -> Option<ImeResetId> {
         let mut result = ctx.run_ui(egui::RawInput::default(), |ui| {
             state.begin_pass(ui.ctx());
@@ -244,6 +283,8 @@ mod tests {
         id
     }
 
+    /// A generation or purpose change supersedes the old fence, old tokens cannot complete, an
+    /// allocation failure stays blocked, and a later real destination change retries.
     #[test]
     fn changed_output_context_supersedes_and_allocation_failure_stays_blocked() {
         let ctx = Context::default();
@@ -276,6 +317,8 @@ mod tests {
         assert!(!state.complete(&ctx, retry, changed));
     }
 
+    /// `sync` followed by `finish` in the same pass allocates exactly one request and keeps it
+    /// as the awaiting boundary.
     #[test]
     fn same_pass_sync_and_finish_keep_one_request() {
         let ctx = Context::default();
@@ -303,6 +346,8 @@ mod tests {
         result.textures_delta.clear();
     }
 
+    /// `finish` reuses the replacement request allocated by `sync` instead of allocating a
+    /// second one, and the stale token cannot release the guard.
     #[test]
     fn stale_output_binding_does_not_force_a_second_request_on_sync_then_finish() {
         let ctx = Context::default();
@@ -354,6 +399,8 @@ mod tests {
         assert!(!state.blocked(ViewportId::ROOT));
     }
 
+    /// If custom eligibility is lost after `sync`, stock IME may echo the queued token but it
+    /// cannot release the suspended guard; only a later eligible descriptor can.
     #[test]
     fn queued_before_absence_token_may_reach_stock_but_cannot_release_suspended_guard() {
         let ctx = Context::default();
@@ -400,6 +447,8 @@ mod tests {
         assert!(state.complete(&ctx, replacement, destination));
     }
 
+    /// UI-pass mode is scoped per viewport, `install` is idempotent, and a child viewport's
+    /// completion cannot release ROOT's guard.
     #[test]
     fn pass_mode_is_per_viewport_and_foreign_completion_cannot_release_a_real_guard() {
         let ctx = Context::default();

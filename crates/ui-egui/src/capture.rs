@@ -124,6 +124,39 @@ impl SurfaceGeometry {
         Some([fit(width), fit(height)])
     }
 
+    /// Pixels per point of the delivered screenshot texture.
+    ///
+    /// egui-wgpu's `surface_fit` shrinks an oversized window's surface by one factor and draws it
+    /// at `pixels_per_point * render_scale`; a crop expressed in points must use that rendered
+    /// scale, not the native one. A window within the limit keeps the native factor exactly, so a
+    /// one-pixel rounding difference between `viewport * ppp` and the integer window size never
+    /// becomes a bogus sub-1 scale.
+    fn captured_pixels_per_point(self) -> f32 {
+        let native = self.pixels_per_point;
+        if !native.is_finite() || native <= 0.0 {
+            return 1.0;
+        }
+        let Some(viewport) = self.viewport else { return native };
+        if !viewport.x.is_finite() || !viewport.y.is_finite() || viewport.x <= 0.0 || viewport.y <= 0.0 || self.max_texture_side == 0 {
+            return native;
+        }
+        let axis = |points: f32| (f64::from(points) * f64::from(native)).round();
+        let (width, height) = (axis(viewport.x), axis(viewport.y));
+        if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+            return native;
+        }
+        let longest = width.max(height);
+        let limit = self.max_texture_side as f64;
+        if longest <= limit {
+            return native;
+        }
+        // Match egui-wgpu exactly: it casts `surface_fit`'s scale to f32 and then multiplies the
+        // f32 pixels-per-point by it.
+        let render_scale = (limit / longest) as f32;
+        let effective = native * render_scale;
+        if effective.is_finite() && effective > 0.0 { effective } else { native }
+    }
+
     fn expected_bytes(self) -> Option<usize> {
         let [width, height] = self.expected_size()?;
         width.checked_mul(height)?.checked_mul(std::mem::size_of::<egui::Color32>())
@@ -548,7 +581,8 @@ pub(crate) fn drain(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         ),
                     )
                 } else {
-                    let mut reply = crate::control::save_screenshot_with_ppp(&image, shot.path.as_deref(), shot.crop, shot.geometry.surface.pixels_per_point);
+                    let captured_ppp = shot.geometry.surface.captured_pixels_per_point();
+                    let mut reply = crate::control::save_screenshot_with_ppp(&image, shot.path.as_deref(), shot.crop, captured_ppp);
                     if let Some(object) = reply.as_object_mut() {
                         object.insert("request".into(), json!(shot.token));
                     }
@@ -619,7 +653,11 @@ mod tests {
     }
 
     fn admit_one(app: &mut FilmcraftApp, ctx: &egui::Context) -> (Receiver<Value>, u64) {
-        app.capture_geometry = Some(geometry(app));
+        admit_with_surface(app, ctx, geometry(app).surface)
+    }
+
+    fn admit_with_surface(app: &mut FilmcraftApp, ctx: &egui::Context, surface: SurfaceGeometry) -> (Receiver<Value>, u64) {
+        app.capture_geometry = Some(CaptureGeometry { surface, document: active_document(app), focus: None });
         let (tx, rx) = channel();
         admit(app, ctx, None, None, tx);
         let token = app.shots.requests.last().map(|shot| shot.token).unwrap_or_default();
@@ -645,10 +683,117 @@ mod tests {
         surface.viewport = Some(vec2(16_384.0, 4_000.0));
         surface.max_texture_side = 8192;
         assert_eq!(surface.expected_size(), Some([8192, 2000]), "both axes scale by the same factor, like egui-wgpu's surface_fit");
+        assert_eq!(surface.captured_pixels_per_point(), 0.5, "the fitted texture is drawn at the same factor");
         surface.viewport = Some(vec2(4_000.0, 16_384.0));
         assert_eq!(surface.expected_size(), Some([2000, 8192]));
+        assert_eq!(surface.captured_pixels_per_point(), 0.5);
         surface.viewport = Some(vec2(1920.0, 1080.0));
         assert_eq!(surface.expected_size(), Some([1920, 1080]), "within the limit nothing shrinks");
+        assert_eq!(surface.captured_pixels_per_point(), 1.0, "an uncapped surface keeps the native scale exactly");
+    }
+
+    #[test]
+    fn captured_scale_falls_back_when_geometry_is_unusable() {
+        let app = app();
+        let mut surface = geometry(&app).surface;
+        surface.pixels_per_point = 2.0;
+        surface.viewport = None;
+        assert_eq!(surface.captured_pixels_per_point(), 2.0, "no viewport preserves the native scale");
+        surface.viewport = Some(vec2(0.0, 600.0));
+        assert_eq!(surface.captured_pixels_per_point(), 2.0);
+        surface.viewport = Some(vec2(f32::NAN, 600.0));
+        assert_eq!(surface.captured_pixels_per_point(), 2.0);
+        surface.viewport = Some(vec2(800.0, 600.0));
+        surface.pixels_per_point = f32::INFINITY;
+        assert_eq!(surface.captured_pixels_per_point(), 1.0, "an invalid native scale falls back to 1, like save_screenshot_with_ppp");
+        surface.pixels_per_point = 0.0;
+        assert_eq!(surface.captured_pixels_per_point(), 1.0);
+    }
+
+    #[test]
+    fn downscaled_capture_crops_with_the_rendered_scale() {
+        let ctx = egui::Context::default();
+        let mut app = app();
+        let surface = SurfaceGeometry {
+            viewport: Some(vec2(16_384.0, 2_000.0)),
+            // A 2x native surface fits at 0.25 render scale: crop at 0.5 pixels per point.
+            // This also catches accidentally returning render_scale without the native factor.
+            pixels_per_point: 2.0,
+            max_texture_side: 8192,
+            minimized: false,
+            occluded: false,
+        };
+        assert_eq!(surface.expected_size(), Some([8192, 1_000]));
+        assert_eq!(surface.captured_pixels_per_point(), 0.5);
+        let (rx, token) = admit_with_surface(&mut app, &ctx, surface);
+        let dir = tempfile::tempdir().expect("a temporary screenshot directory");
+        let path = dir.path().join("downscaled-crop.png");
+        // The crop is 400x200 points, which the fitted surface draws as 200x100 pixels. Paint a
+        // red rectangle at exactly that rendered position so a wrong (native) scale would crop
+        // black pixels or the wrong dimensions instead of this region.
+        let mut image = ColorImage::filled([8192, 1_000], Color32::BLACK);
+        for y in 25..125 {
+            for x in 50..250 {
+                image.pixels[y * 8192 + x] = Color32::RED;
+            }
+        }
+        let shot = &mut app.shots.requests[0];
+        shot.path = Some(path.to_string_lossy().into_owned());
+        shot.crop = Some([100.0, 50.0, 400.0, 200.0]);
+        shot.issued = true;
+        let callback = shot.callback.take().expect("a callback");
+        callback.complete(Arc::new(image));
+        drain(&mut app, &ctx);
+        let reply = rx.try_recv().expect("a screenshot reply");
+        assert_eq!(reply["request"], token);
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!([reply["result"]["width"].as_u64(), reply["result"]["height"].as_u64()], [Some(200), Some(100)]);
+        let decoded = image::load_from_memory(&std::fs::read(&path).expect("the saved crop")).expect("decode the saved crop").to_rgba8();
+        assert_eq!(decoded.dimensions(), (200, 100));
+        assert!(
+            decoded.pixels().all(|pixel| *pixel == image::Rgba([255, 0, 0, 255])),
+            "the crop must select the red region where the downscaled surface drew it"
+        );
+    }
+
+    #[test]
+    fn uncapped_hidpi_capture_keeps_the_native_scale() {
+        let ctx = egui::Context::default();
+        let mut app = app();
+        let surface = SurfaceGeometry {
+            // 801 points at 1.5x is 1201.5 window pixels, which rounds to 1202. The fitted scale
+            // must still be exactly 1.0 rather than 1202/1201.5 from that one-pixel difference.
+            viewport: Some(vec2(801.0, 600.0)),
+            pixels_per_point: 1.5,
+            max_texture_side: 8192,
+            minimized: false,
+            occluded: false,
+        };
+        assert_eq!(surface.expected_size(), Some([1202, 900]));
+        assert_eq!(surface.captured_pixels_per_point(), 1.5);
+        let (rx, token) = admit_with_surface(&mut app, &ctx, surface);
+        let dir = tempfile::tempdir().expect("a temporary screenshot directory");
+        let path = dir.path().join("hidpi-crop.png");
+        let mut image = ColorImage::filled([1202, 900], Color32::BLACK);
+        for y in 75..375 {
+            for x in 150..750 {
+                image.pixels[y * 1202 + x] = Color32::GREEN;
+            }
+        }
+        let shot = &mut app.shots.requests[0];
+        shot.path = Some(path.to_string_lossy().into_owned());
+        shot.crop = Some([100.0, 50.0, 400.0, 200.0]);
+        shot.issued = true;
+        let callback = shot.callback.take().expect("a callback");
+        callback.complete(Arc::new(image));
+        drain(&mut app, &ctx);
+        let reply = rx.try_recv().expect("a screenshot reply");
+        assert_eq!(reply["request"], token);
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!([reply["result"]["width"].as_u64(), reply["result"]["height"].as_u64()], [Some(600), Some(300)]);
+        let decoded = image::load_from_memory(&std::fs::read(&path).expect("the saved crop")).expect("decode the saved crop").to_rgba8();
+        assert_eq!(decoded.dimensions(), (600, 300));
+        assert!(decoded.pixels().all(|pixel| *pixel == image::Rgba([0, 255, 0, 255])), "the HiDPI crop must select the green region at the native scale");
     }
 
     #[test]

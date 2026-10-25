@@ -181,6 +181,61 @@ fn dragging_an_out_edge_inward_trims_the_clip() {
     assert_eq!(d.undo_steps(), undo0 + 1, "one undo step");
 }
 
+/// Duplicate frame markers stay inside a clip while its Out edge is dragged in, and follow the
+/// trim once it is released.
+#[test]
+fn duplicate_frame_markers_stay_inside_a_clip_being_trimmed() {
+    let mut d = Driver::demo();
+    let city = d.v1_clip(CITY);
+    let (item, start, source_in, duration) = {
+        let (_, it) = d.app().session.active_sequence().expect("sequence").find_item(ClipId(city)).expect("clip");
+        (it.item.0, it.start.0, it.source_in.0, it.duration.0)
+    };
+    d.exec("timeline.place", json!({"item": item, "track": "V2", "time": start, "sourceIn": source_in, "duration": duration, "audio": false}));
+    d.exec("sequence.showDuplicateFrameMarkers", json!({"on": true}));
+    d.frames(3);
+    let (x0, x1, y) = d.edges(city);
+    let by = ((x1 - x0) / 2.0).round();
+    let stripe_right = |d: &mut Driver| {
+        let els = d.ok("ui.elements", json!({"prefix": format!("timeline.duplicateFrames.{city}.")}));
+        els.as_array()
+            .expect("elements")
+            .iter()
+            .map(|e| (e["rect"][0].as_f64().expect("x") + e["rect"][2].as_f64().expect("w")) as f32)
+            .fold(f32::MIN, f32::max)
+    };
+    assert!((stripe_right(&mut d) - x1).abs() <= 2.0, "the stripe runs to the Out edge");
+    // press on the Out edge and move half the clip inward, without releasing
+    let push = |d: &mut Driver, e: egui::Event| d.harness.input_mut().events.push(e);
+    push(&mut d, egui::Event::PointerMoved(pos2(x1 - 3.0, y)));
+    d.frames(1);
+    push(&mut d, egui::Event::PointerButton { pos: pos2(x1 - 3.0, y), button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+    d.frames(1);
+    for i in 1..=by as usize {
+        push(&mut d, egui::Event::PointerMoved(pos2(x1 - 3.0 - i as f32, y)));
+        d.frames(1);
+    }
+    // (the painter's clip rect is rounded to whole pixels)
+    let body_right = |d: &mut Driver| {
+        let id = format!("timeline.clip.{city}");
+        let els = d.ok("ui.elements", json!({"prefix": id}));
+        let r = &els.as_array().expect("elements").iter().find(|e| e["id"] == id.as_str()).expect("clip")["rect"];
+        (r[0].as_f64().expect("x") + r[2].as_f64().expect("w")) as f32
+    };
+    let (during, right) = (stripe_right(&mut d), body_right(&mut d));
+    assert!(right < x1 - by / 2.0, "the clip is drawn trimmed: {right}");
+    assert!(during <= right + 1.5, "inside the trimmed clip during the drag: {during} > {right}");
+    push(
+        &mut d,
+        egui::Event::PointerButton { pos: pos2(x1 - 3.0 - by, y), button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() },
+    );
+    d.frames(3);
+    let (_, e1) = d.span(city);
+    assert!(e1 < start + duration, "trimmed");
+    let (after, right) = (stripe_right(&mut d), body_right(&mut d));
+    assert!(after <= right + 1.5, "after the trim: {after} > {right}");
+}
+
 /// Just right of a cut the clip on the right is grabbed: its In edge trims, and the clip on the
 /// left stays as it was. The left clip's Out edge used to claim both sides of the cut.
 #[test]

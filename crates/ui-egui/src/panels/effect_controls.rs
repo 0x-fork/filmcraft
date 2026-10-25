@@ -680,7 +680,7 @@ pub(crate) fn param_row(
         (ParamKind::Text, ParamValue::Text(s)) if !pd.id.ends_with("_lut") => {
             // edited in a buffer; committed (one undo step) when the field loses focus
             let mut buf = vui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| s.clone());
-            let r = crate::widgets::accessible_name(vui.add(egui::TextEdit::singleline(&mut buf).desired_width(160.0)), pd.label);
+            let r = crate::widgets::accessible_name(vui.add(egui::TextEdit::singleline(&mut buf).desired_width(160.0)), crate::i18n::t(pd.label));
             app.auto.add(&format!("effectControls.text.{}.{}", idx, pd.id), r.rect, pd.label);
             if r.lost_focus() {
                 if buf != *s {

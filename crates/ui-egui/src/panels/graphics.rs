@@ -2363,7 +2363,7 @@ impl Ctx<'_> {
             self.set(id, json!(format!("#{r8:02x}{g8:02x}{b8:02x}")));
         }
     }
-    fn choice(&mut self, vui: &mut egui::Ui, id: &str, opts: &[&str], width: f32) {
+    fn choice(&mut self, vui: &mut egui::Ui, id: &str, label: &str, opts: &[&str], width: f32) {
         let cur = match pv(self.e, id, self.mt) {
             ParamValue::Choice(c) => c as usize,
             _ => 0,
@@ -2377,7 +2377,7 @@ impl Ctx<'_> {
                     ui.selectable_value(&mut sel, i, crate::i18n::t(o));
                 }
             });
-        let response = crate::widgets::accessible_name(r.response, id);
+        let response = crate::widgets::accessible_name(r.response, label);
         self.auto(id, response.rect, id);
         if sel != cur {
             self.set(id, json!(sel));
@@ -2799,7 +2799,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         if e.effect == graphic::SHAPE_LAYER && section(ui, app, "Shape", &t) {
             let (_, mut vui) = cx.row(ui, tl!("Shape"));
-            cx.choice(&mut vui, "shape", graphic::SHAPE_OPTS, 120.0);
+            cx.choice(&mut vui, "shape", tl!("Shape"), graphic::SHAPE_OPTS, 120.0);
             cx.point(ui, tl!("Size"), "size");
             cx.number(ui, tl!("Corner Radius"), "corner_radius", 0.5, (0.0, 10_000.0), 0, "");
             cx.number(ui, tl!("Polygon Sides"), "sides", 0.05, (3.0, 64.0), 0, "");
@@ -2811,7 +2811,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             cx.color(&mut vui, "fill_color");
             if fill_on {
                 vui.add_space(6.0);
-                cx.choice(&mut vui, "fill_kind", graphic::FILL_KIND_OPTS, 130.0);
+                cx.choice(&mut vui, "fill_kind", tl!("Fill Type"), graphic::FILL_KIND_OPTS, 130.0);
             }
             let fill_kind = match pv(e, "fill_kind", mt) {
                 ParamValue::Choice(c) => c,
@@ -2823,17 +2823,17 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 cx.color(&mut vui, "gradient_end");
                 cx.number(ui, tl!("   Angle"), "gradient_angle", 0.5, (-3600.0, 3600.0), 0, " °");
             }
-            for (on, col, w, kind, label) in [
-                ("stroke", "stroke_color", "stroke_width", "stroke_type", tl!("Stroke")),
-                ("stroke2", "stroke2_color", "stroke2_width", "stroke2_type", tl!("Stroke 2")),
+            for (on, col, w, kind, label, width_label, type_label) in [
+                ("stroke", "stroke_color", "stroke_width", "stroke_type", tl!("Stroke"), tl!("Stroke Width"), tl!("Stroke Type")),
+                ("stroke2", "stroke2_color", "stroke2_width", "stroke2_type", tl!("Stroke 2"), tl!("Stroke 2 Width"), tl!("Stroke 2 Type")),
             ] {
                 let (_, mut vui) = cx.row(ui, label);
                 cx.check(&mut vui, on, "");
                 cx.color(&mut vui, col);
                 vui.add_space(6.0);
-                cx.number_in(&mut vui, &format!("{label} width"), NumberField { id: w, speed: 0.2, range: (0.0, 1000.0), decimals: 1, unit: "" });
+                cx.number_in(&mut vui, width_label, NumberField { id: w, speed: 0.2, range: (0.0, 1000.0), decimals: 1, unit: "" });
                 vui.add_space(6.0);
-                cx.choice(&mut vui, kind, graphic::STROKE_OPTS, 70.0);
+                cx.choice(&mut vui, kind, type_label, graphic::STROKE_OPTS, 70.0);
             }
             let (_, mut vui) = cx.row(ui, tl!("Background"));
             let bg = cx.check(&mut vui, "background", "");

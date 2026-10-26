@@ -95,6 +95,9 @@ pub use gpu::{gpu_compositor_unsupported, software_rasterizer};
 pub use hooks::{AudioDevices, AudioOut, ClipboardMedia, HostHooks, RelinkHint, SystemThemeFn};
 pub(crate) use raw_input::rewrite_native_window_input;
 
+pub use ime_reset::install_ime_reset_callbacks;
+pub(crate) use native_dialogs::EXPORT_SAVE_DIALOGS;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dialog {
     About,
@@ -152,18 +155,6 @@ pub struct Playback {
     /// names the last visible frame, not the following playback boundary.
     pub rest_at: Option<Tick>,
 }
-
-/// Export entries that run from the menus through the save panel: command, filter label,
-/// extension.
-pub(crate) const EXPORT_SAVE_DIALOGS: [(&str, &str, &str); 7] = [
-    ("markers.exportCsv", "Marker report (CSV)", "csv"),
-    ("file.exportEdl", "EDL", "edl"),
-    ("file.exportFcp7Xml", "Final Cut Pro XML", "xml"),
-    ("file.exportFcpxml", "FCPXML", "fcpxml"),
-    ("file.exportOtio", "OpenTimelineIO", "otio"),
-    ("file.exportAle", "Avid Log Exchange", "ale"),
-    ("file.exportSelectionProject", "FilmCraft Project", "fcproj"),
-];
 
 /// Incoming composition identity for the Program monitor. Interrupted compositions remain
 /// Stale until the matching opaque native reset fence; output or old terminal input is not
@@ -373,9 +364,4 @@ pub struct GpuState {
     pub broken: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Largest texture side the device accepts.
     pub max_texture: u32,
-}
-
-/// Install once in each native/web/harness Context creator, before the first UI pass.
-pub fn install_ime_reset_callbacks(ctx: &egui::Context) {
-    ime_reset::install(ctx);
 }

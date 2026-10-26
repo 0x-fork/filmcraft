@@ -22,7 +22,7 @@
 //! `program.textEdit`, `graphics.*` in the panels.
 
 use crate::widgets::CenteredDialog as _;
-use egui::ime_context::{CommittedText, ImeMutationStamp, ImeObservation, ImeTarget};
+use egui::ime_context::ImeTarget;
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use filmcraft_engine::Session;
 use filmcraft_geom::{Affine, Vec2};
@@ -49,7 +49,7 @@ pub struct LayerView {
     pub local: [f32; 4],
 }
 
-/// The Program monitor editor drawn in one pass, remembered so the final IME observation can run
+/// The Program monitor editor drawn in one pass, remembered so the end-of-pass IME check can run
 /// after that pass's control requests have been drained. It holds only geometry, never a copy of
 /// the layer's text.
 #[derive(Clone, Copy, Debug)]
@@ -66,16 +66,14 @@ pub(crate) struct DrawnImeEditor {
     pub fingerprint: u64,
     /// Identity of the committed text drawn in this pass. A control request that changes the
     /// text after the draw must not publish the old cursor geometry with the new text; the next
-    /// pass draws and observes it. A caret/selection-only change keeps the text, so the owner and
-    /// generation can stay stable while the new selection is published.
+    /// pass draws and publishes it. A caret/selection-only change keeps the text, so the IME
+    /// context stays.
     pub text_stamp: u64,
     /// Every layout-affecting layer property drawn in this pass, evaluated at the playhead. A
     /// same-pass control request can change the font, style, alignment, spacing, box or transform
     /// without changing the committed text or the layer identity; the cursor rectangle from the
     /// old layout must then not be published with the new one.
     pub layout_fingerprint: u64,
-    pub rect: Rect,
-    pub cursor_rect: Rect,
 }
 
 /// The most marked text drawn; an input method's composition is a few words.
@@ -688,7 +686,6 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     let resp = ui.interact(pic, id, if graphics_tool { Sense::click_and_drag() } else { Sense::hover() });
     let hover = resp.hover_pos();
     let mut actions: Vec<(String, Value)> = Vec::new();
-    let mut pending_ime: Option<PendingImeEdit> = None;
     let drag_id = id.with("drag");
     let mut drag: Option<DragState> = ui.data(|d| d.get_temp(drag_id));
 
@@ -721,7 +718,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     // ---- text editing
     if let Some(ed) = editing.clone() {
         match views.iter().find(|v| v.clip.0 == ed.clip && v.layer == ed.layer && v.is_text()) {
-            Some(v) => text_edit(app, ui, v, ed, &resp, &mut actions, &mut pending_ime),
+            Some(v) => text_edit(app, ui, v, ed, &resp, &mut actions),
             None => end_edit(app, ui),
         }
     }
@@ -1020,16 +1017,8 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     } else if tool != Tool::Pen && !app.ui.pen_points.is_empty() {
         app.ui.pen_points.clear();
     }
-    // ---- run accepted actions before observing committed text and caret geometry
-    let viewport = ui.ctx().viewport_id();
-    let frame_nr = ui.ctx().cumulative_frame_nr_for(viewport);
-    for (action_index, (cmd, p)) in actions.into_iter().enumerate() {
-        let pending = pending_ime.as_ref().filter(|pending| pending.action_index == action_index);
-        let target = pending.and_then(|pending| current_graphics_ime_target(app, pending.clip, pending.layer));
-        let actual_before = pending.and_then(|pending| {
-            pending.first_before.as_ref()?;
-            current_layer_text(&app.session, pending.clip, pending.layer).map(|text| ime_stamp(text, pending.before_cursor, pending.before_anchor))
-        });
+    // ---- run accepted actions before drawing the caret
+    for (cmd, p) in actions {
         let (cmd, then_edit) = match cmd.strip_suffix("#edit") {
             Some(c) => (c.to_string(), true),
             None => (cmd, false),
@@ -1042,33 +1031,11 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
                     app.ui.gfx_edit = Some(GfxEdit { clip: c, layer: l as usize, caret: 0, anchor: 0, uid, fingerprint: 0 });
                     app.ui.focused = crate::dock::PanelKind::Program;
                 }
-                if let (Some(pending), Some(target)) = (pending, target) {
-                    let actual_after =
-                        current_layer_text(&app.session, pending.clip, pending.layer).map(|text| ime_stamp(text, pending.final_cursor, pending.final_anchor));
-                    let exact_ime_chain = !pending.application_mutation
-                        && pending.first_before.as_ref().is_some_and(|before| actual_before.as_ref() == Some(before))
-                        && pending.after.last().is_some_and(|after| actual_after.as_ref() == Some(after));
-
-                    if exact_ime_chain {
-                        if let Some(mut before) = actual_before {
-                            for after in &pending.after {
-                                app.ime_context.note_input_method_apply(viewport, frame_nr, target, before.clone(), after.clone());
-
-                                before = after.clone();
-                            }
-                        }
-                    } else if pending.application_mutation || pending.first_before.is_some() {
-                        // An ordinary edit was mixed into the transaction, the model did not match
-                        // the locally accepted result, or another action changed it first: the
-                        // frame is application-origin even if an IME event was also present.
-                        app.ime_context.note_application_change(viewport, frame_nr, target);
-                    }
-                }
             }
             Err(e) => app.ui.status = e.to_string(),
         }
     }
-    // The model may have changed above; draw and observe the post-action caret and committed text.
+    // The model may have changed above; draw the post-action caret and committed text.
     let views = visible_layers(app, pic, frame);
     if let Some(ed) = app.ui.gfx_edit.clone()
         && let Some(v) = views.iter().find(|v| v.clip.0 == ed.clip && v.layer == ed.layer)
@@ -1102,16 +1069,17 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
         }
         let er = Rect::from_points(&v.quad()).union(cursor_rect);
         app.auto.add("program.textEdit", er, &tp.text);
-        // Do not publish yet: `drain_ui_requests` later in this pass may run a command or replace
-        // `gfxEdit`. `finish_graphics_ime` observes the post-drain state with this geometry.
-        note_graphics_ime_editor(app, ui, v, er, cursor_rect);
+        // `drain_ui_requests` later in this pass may run a command or replace `gfxEdit`:
+        // `finish_graphics_ime` checks the post-drain state against this one.
+        note_graphics_ime_editor(app, ui, v, cursor_rect);
     }
 }
 
-/// Remember the focused Program monitor editor drawn in this pass. The actual observation is
-/// made once by [`finish_graphics_ime`] after the pass's control requests have run.
-pub(crate) fn note_graphics_ime_editor(app: &mut FilmcraftApp, ui: &egui::Ui, v: &LayerView, rect: Rect, cursor_rect: Rect) {
+/// Remember the focused Program monitor editor drawn in this pass, for [`finish_graphics_ime`]
+/// after the pass's control requests have run, and put the candidate window at its caret.
+pub(crate) fn note_graphics_ime_editor(app: &mut FilmcraftApp, ui: &egui::Ui, v: &LayerView, cursor_rect: Rect) {
     let ctx = ui.ctx();
+    app.ime_composer.set_caret(ctx, cursor_rect);
     let viewport = ctx.viewport_id();
     let pass_nr = ctx.cumulative_pass_nr_for(viewport);
     let sequence = app.session.state.active_sequence.map(|sequence| sequence.0);
@@ -1130,119 +1098,81 @@ pub(crate) fn note_graphics_ime_editor(app: &mut FilmcraftApp, ui: &egui::Ui, v:
         fingerprint,
         text_stamp,
         layout_fingerprint,
-        rect,
-        cursor_rect,
     });
 }
 
-/// Publish this pass's final IME observation, after all commands for the pass have been drained.
+/// The end-of-pass check of the editor drawn in `ctx`'s viewport, after the pass's commands
+/// ran. Returns whether the editor drawn there in this pass keeps the composer's descriptor.
+/// Otherwise the composer turns the IME off: when the editor was drawn there, or, with `last`
+/// (the main window's pass, which ends after every native window's), when it was drawn nowhere.
 ///
-/// The producer re-reads the committed text without evaluating/copying a full `LayerSpec`; a
-/// target, document or sequence replaced since the overlay drew publishes `None` instead of
-/// pairing an old owner with the new model.
-pub(crate) fn finish_graphics_ime(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
+/// The composer's descriptor goes only with the editor's current target: a document, sequence,
+/// target, text or layout replaced since the overlay drew turns it off for this pass instead of
+/// pairing the old caret with the new model.
+pub(crate) fn finish_graphics_ime(app: &mut FilmcraftApp, ctx: &egui::Context, last: bool) -> bool {
     let viewport = ctx.viewport_id();
-    let pass_nr = ctx.cumulative_pass_nr_for(viewport);
-    let Some(drawn) = app.ime_drawn_editor.take() else { return false };
-    if drawn.viewport != viewport || drawn.pass_nr != pass_nr {
+    let drawn = match app.ime_drawn_editor {
+        Some(drawn) if drawn.viewport != viewport => return false,
+        None if !last => return false,
+        drawn => drawn.filter(|drawn| drawn.pass_nr == ctx.cumulative_pass_nr_for(viewport)),
+    };
+    let eligible = drawn.is_some_and(|drawn| graphics_ime_eligible(app, ctx, &drawn));
+    if !eligible {
+        // The editor is gone or replaced: the marked text goes with it.
+        let _ = app.ime_composer.update(ctx, false);
         return false;
     }
-    app.note_ime_observed(viewport, pass_nr);
+    app.note_ime_viewport(viewport);
+    // In the main window the composer wrote its descriptor itself; a native window's goes out
+    // after its last body.
+    let owner = app.ime_composer_target.map(|target| target.owner);
+    if let Some(output) = ctx.output(|o| o.ime.as_ref().filter(|ime| Some(ime.owner) == owner).map(crate::ime_reset::OutputContext::of)) {
+        app.ime_reset.produced(output);
+    }
+    true
+}
+
+/// Whether the editor drawn in this pass is still the one being edited, unchanged since it drew.
+fn graphics_ime_eligible(app: &mut FilmcraftApp, ctx: &egui::Context, drawn: &DrawnImeEditor) -> bool {
+    // A picker or in-app modal opened after the overlay drew owns input for the rest of this
+    // pass, so this editor cannot attach an already queued reset under the modal. Core may still
+    // carry that un-taken request to a later stock descriptor (the accepted attachment
+    // limitation); the next eligible pass rearms this guard explicitly.
     if app.ime_modal_blocks_input() {
-        // A picker or in-app modal opened after the overlay drew owns input for the rest of this
-        // pass. Publish no custom descriptor, so this editor cannot attach an already queued reset
-        // under the modal. Core may still carry that un-taken request to a later stock descriptor
-        // (the accepted attachment limitation); the next eligible pass rearms this guard explicitly.
-        app.ime_context.observe(viewport, None);
-        return true;
+        return false;
     }
     if drawn.document_epoch != app.session.document_epoch || drawn.sequence != app.session.state.active_sequence.map(|sequence| sequence.0) {
-        app.ime_context.observe(viewport, None);
-        return true;
+        return false;
     }
-    let eid = egui::Id::unique(TEXT_EDIT_ID);
-    if ctx.memory(|m| m.focused() != Some(eid)) {
-        app.ime_context.observe(viewport, None);
-        return true;
+    if ctx.memory(|m| m.focused() != Some(egui::Id::unique(TEXT_EDIT_ID))) {
+        return false;
     }
-    let Some(ed) = app.ui.gfx_edit.clone() else {
-        app.ime_context.observe(viewport, None);
-        return true;
-    };
+    let Some(ed) = app.ui.gfx_edit.clone() else { return false };
     if ed.clip != drawn.clip || ed.layer != drawn.layer {
-        app.ime_context.observe(viewport, None);
-        return true;
+        return false;
     }
-    let Some(sequence) = app.session.state.active_sequence else {
-        app.ime_context.observe(viewport, None);
-        return true;
-    };
-    let Some(uid) = current_layer_uid(&app.session, ed.clip, ed.layer) else {
-        app.ime_context.observe(viewport, None);
-        return true;
+    let (Some(sequence), Some(uid)) = (app.session.state.active_sequence, current_layer_uid(&app.session, ed.clip, ed.layer)) else {
+        return false;
     };
     let target = graphics_ime_target(sequence.0, ed.clip, ed.layer, uid, app.ime_replacement_epoch);
     if target != drawn.target || current_layer_fingerprint(&app.session, ed.clip, ed.layer).is_none_or(|fingerprint| fingerprint != drawn.fingerprint) {
         // A control request replaced the edit target, reordered the layers, or changed the
-        // document after the overlay drew. Do not pair the old owner with the new content.
-
-        app.ime_context.observe(viewport, None);
-        return true;
+        // document after the overlay drew.
+        return false;
     }
-    let Some(text) = current_layer_text(&app.session, ed.clip, ed.layer) else {
-        app.ime_context.observe(viewport, None);
-        return true;
-    };
+    let Some(text) = current_layer_text(&app.session, ed.clip, ed.layer) else { return false };
     if ime_text_stamp(text) != drawn.text_stamp {
-        // A same-pass control request changed the text after the overlay drew. The published
-        // cursor rectangle and layout belong to the old text: report no descriptor for this pass
-        // and let the next pass draw and observe the correct geometry. The in-flight composition
-        // belongs to the text that was replaced, so its next delete/preedit/commit must not be
-        // inserted into the new text.
+        // A same-pass control request changed the text after the overlay drew. The caret
+        // belongs to the old text, and so does the composition: its next delete, preedit or
+        // commit must not be inserted into the new text.
         app.invalidate_ime_composition();
-        app.ime_context.observe(viewport, None);
-        return true;
+        return false;
     }
-    if current_layer_layout_fingerprint(&app.session, ed.clip, ed.layer).is_none_or(|fingerprint| fingerprint != drawn.layout_fingerprint) {
-        // A same-pass control request changed a layout-affecting property (font, style,
-        // alignment, spacing, box, transform, per-character style or pin) without changing the
-        // committed text. The old cursor rectangle belongs to the previous layout: publish no
-        // descriptor for this pass and let the next pass draw and observe the new geometry.
-        app.ime_context.observe(viewport, None);
-        return true;
-    }
-    // A caret/selection-only change after the draw keeps the committed text. Publish the new
-    // selection with the owner and generation unchanged; the cursor rectangle is one pass old,
-    // and the next pass refreshes it. Hostile offsets remain an explicit `Unavailable` snapshot.
-    let frame_nr = ctx.cumulative_frame_nr_for(viewport);
-    // FilmCraft's committed text never contains the IME pre-edit (the composer's marked text is
-    // only drawn over the video), so there is no preedit range to remove. A hostile or not-yet-clamped `gfxEdit` offset that
-    // is not a UTF-8 boundary is published as the explicit `Unavailable` snapshot, never as a
-    // nearby guessed offset.
-    let valid_offsets = ed.caret <= text.len() && ed.anchor <= text.len() && text.is_char_boundary(ed.caret) && text.is_char_boundary(ed.anchor);
-    let observation = ImeObservation::new(frame_nr, pass_nr, target)
-        .purpose(egui::IMEPurpose::Normal)
-        .committed(valid_offsets.then(|| CommittedText::new(text, ed.caret, ed.anchor)));
-    let update = app.ime_context.observe(viewport, Some(observation));
-
-    if let Some(update) = update {
-        let (rect, cursor_rect) = (drawn.rect, drawn.cursor_rect);
-        app.ime_reset.produced(crate::ime_reset::OutputContext { owner: update.owner, generation: update.context_generation, purpose: update.purpose });
-        ctx.output_mut(|o| {
-            o.ime = Some(egui::output::IMEOutput {
-                owner: update.owner,
-                context_generation: update.context_generation,
-                purpose: update.purpose,
-                rect,
-                cursor_rect,
-                should_interrupt_composition: false, // core attaches the one-shot request/interrupt
-                reset_request: None,
-                change_cause: update.change_cause,
-                surrounding_text: update.surrounding_text,
-            })
-        });
-    }
-    true
+    // A same-pass control request that changed a layout-affecting property (font, style,
+    // alignment, spacing, box, transform, per-character style or pin) moved the caret: the next
+    // pass draws and publishes the new one. A caret or selection move alone keeps the
+    // descriptor, with a caret one pass old.
+    current_layer_layout_fingerprint(&app.session, ed.clip, ed.layer).is_some_and(|fingerprint| fingerprint == drawn.layout_fingerprint)
 }
 
 fn layer_display_name_view(app: &FilmcraftApp, v: &LayerView) -> String {
@@ -1301,31 +1231,6 @@ pub(crate) fn select_all_edited_text(app: &mut FilmcraftApp) -> bool {
         app.invalidate_ime_composition();
     }
     true
-}
-
-/// One text edit action queued by [`text_edit`], with the accepted local IME receipt chain.
-///
-/// The model command is executed later in the same pass. The receipt is reported to the tracker
-/// only after that command succeeds and the post-command model still matches the local result.
-struct PendingImeEdit {
-    action_index: usize,
-    clip: u64,
-    layer: usize,
-    /// The committed stamp immediately before the first accepted IME mutation.
-    first_before: Option<ImeMutationStamp>,
-    before_cursor: usize,
-    before_anchor: usize,
-    /// One stamp immediately after each accepted IME commit/delete mutation.
-    after: Vec<ImeMutationStamp>,
-    final_cursor: usize,
-    final_anchor: usize,
-    /// Ordinary text/paste/key/Cut changes were mixed into the same queued edit.
-    application_mutation: bool,
-}
-
-/// Build the receipt for committed `text` at `cursor`/`anchor`; no preedit text is attached.
-fn ime_stamp(text: &str, cursor: usize, anchor: usize) -> ImeMutationStamp {
-    ImeMutationStamp::from_committed(text, cursor, anchor, None)
 }
 
 /// The effect instance of layer `layer` of `clip` when it is enabled and on screen.
@@ -1710,17 +1615,13 @@ enum EventFlow {
     Skip,
 }
 
-/// Mutable state for one batch of text-editor events: the committed text, caret/selection, the IME
-/// receipt chain, and whether the batch contains ordinary application-origin edits.
+/// Mutable state for one batch of text-editor events: the committed text and caret/selection.
 struct TextEditState {
     ed: GfxEdit,
     text: String,
     changed: bool,
     stop: bool,
-    application_mutation: bool,
     custom_mutations: bool,
-    ime_before: Option<(usize, usize)>,
-    ime_after: Vec<ImeMutationStamp>,
 }
 
 impl TextEditState {
@@ -1740,14 +1641,6 @@ impl TextEditState {
         self.ed.caret = a;
         self.ed.anchor = a;
         true
-    }
-
-    /// Record the first pre-mutation caret/anchor and the post-mutation stamp. The caller records
-    /// only after an accepted IME mutation, exactly as the original inline arms did.
-    fn record_ime_change(&mut self, before: (usize, usize)) {
-        self.ime_before.get_or_insert(before);
-        self.ime_after.push(ime_stamp(&self.text, self.ed.caret, self.ed.anchor));
-        self.changed = true;
     }
 }
 
@@ -1802,7 +1695,7 @@ fn apply_preedit(app: &mut FilmcraftApp, viewport: egui::ViewportId, target: Ime
 
 /// Apply a UTF-8 byte-count surrounding deletion after the staleness check. Only whole
 /// characters fully inside the reported byte ranges are removed, the selection is preserved
-/// and accepted deletions record an IME receipt; a stale event skips.
+/// and a stale event skips.
 fn apply_delete_surrounding_bytes(app: &FilmcraftApp, state: &mut TextEditState, target: ImeTarget, before_bytes: usize, after_bytes: usize) -> EventFlow {
     if ime_event_is_stale(app, target) {
         return EventFlow::Skip;
@@ -1810,16 +1703,14 @@ fn apply_delete_surrounding_bytes(app: &FilmcraftApp, state: &mut TextEditState,
     let (a, b) = state.selection();
     let (before, after) = surrounding_byte_deletion_ranges(&state.text, a, b, before_bytes, after_bytes);
     if !before.is_empty() || !after.is_empty() {
-        let previous = (state.ed.caret, state.ed.anchor);
         apply_surrounding_deletion(&mut state.text, &mut state.ed, before, after);
-        state.record_ime_change(previous);
+        state.changed = true;
     }
     EventFlow::Applied
 }
 
 /// Apply a character-count surrounding deletion after the staleness check. The selection is
-/// preserved, deletion stops at either text end and an accepted deletion records an IME
-/// receipt; a stale event skips.
+/// preserved, deletion stops at either text end, and a stale event skips.
 fn apply_delete_surrounding_chars(app: &FilmcraftApp, state: &mut TextEditState, target: ImeTarget, before_chars: usize, after_chars: usize) -> EventFlow {
     if ime_event_is_stale(app, target) {
         return EventFlow::Skip;
@@ -1828,16 +1719,15 @@ fn apply_delete_surrounding_chars(app: &FilmcraftApp, state: &mut TextEditState,
     let before = prev_n_chars(&state.text, a, before_chars)..a;
     let after = b..next_n_chars(&state.text, b, after_chars);
     if !before.is_empty() || !after.is_empty() {
-        let previous = (state.ed.caret, state.ed.anchor);
         apply_surrounding_deletion(&mut state.text, &mut state.ed, before, after);
-        state.record_ime_change(previous);
+        state.changed = true;
     }
     EventFlow::Applied
 }
 
 /// Insert application-origin typing or paste: strip control characters except newline,
-/// replace the selection, move the caret to the end and mark the batch as an ordinary
-/// application mutation. Input that sanitizes to nothing is skipped.
+/// replace the selection and move the caret to the end. Input that sanitizes to nothing is
+/// skipped.
 fn apply_text_input(state: &mut TextEditState, input: &str) -> EventFlow {
     let s: String = input.chars().filter(|c| !c.is_control() || *c == '\n').collect();
     if s.is_empty() {
@@ -1848,14 +1738,12 @@ fn apply_text_input(state: &mut TextEditState, input: &str) -> EventFlow {
     state.text.insert_str(at, &s);
     state.ed.caret += s.len();
     state.ed.anchor = state.ed.caret;
-    state.application_mutation = true;
     state.changed = true;
     EventFlow::Applied
 }
 
 /// Apply an IME commit after the staleness check: clear the composition, insert sanitized
-/// committed text, or delete the selection when the commit is empty. Text changes record an
-/// IME receipt; a stale commit skips.
+/// committed text, or delete the selection when the commit is empty; a stale commit skips.
 fn apply_ime_commit(app: &mut FilmcraftApp, state: &mut TextEditState, target: ImeTarget, input: &str) -> EventFlow {
     if ime_event_is_stale(app, target) {
         return EventFlow::Skip;
@@ -1863,13 +1751,12 @@ fn apply_ime_commit(app: &mut FilmcraftApp, state: &mut TextEditState, target: I
     app.ime_composition = None;
     app.ime_composition_viewport = None;
     let s: String = input.chars().filter(|c| !c.is_control() || *c == '\n').collect();
-    let previous = (state.ed.caret, state.ed.anchor);
     if s.is_empty() {
         // A commit replaces the selection even when the input method produced no text
         // (for example DeleteSurroundingBytes followed by an empty commit). An empty
         // commit with no selection stays a no-op.
         if state.delete_selection() {
-            state.record_ime_change(previous);
+            state.changed = true;
         }
     } else {
         state.delete_selection();
@@ -1877,19 +1764,17 @@ fn apply_ime_commit(app: &mut FilmcraftApp, state: &mut TextEditState, target: I
         state.text.insert_str(at, &s);
         state.ed.caret += s.len();
         state.ed.anchor = state.ed.caret;
-        state.record_ime_change(previous);
+        state.changed = true;
     }
     EventFlow::Applied
 }
 
-/// Copy the sorted selection, and for Cut delete it and mark an application mutation. An
-/// empty selection is a no-op.
+/// Copy the sorted selection, and for Cut delete it. An empty selection is a no-op.
 fn apply_copy_cut(ui: &egui::Ui, state: &mut TextEditState, cut: bool) -> EventFlow {
     let (a, b) = state.selection();
     if a < b {
         ui.ctx().copy_text(state.text[a..b].to_string());
         if cut && state.delete_selection() {
-            state.application_mutation = true;
             state.changed = true;
         }
     }
@@ -1985,7 +1870,6 @@ fn apply_key_event(
             state.text.insert(at, '\n');
             state.ed.caret += 1;
             state.ed.anchor = state.ed.caret;
-            state.application_mutation = true;
             state.changed = true;
         }
         egui::Key::Backspace => {
@@ -1999,7 +1883,6 @@ fn apply_key_event(
                 did = true;
             }
             if did {
-                state.application_mutation = true;
                 state.changed = true;
             }
         }
@@ -2012,7 +1895,6 @@ fn apply_key_event(
                 did = true;
             }
             if did {
-                state.application_mutation = true;
                 state.changed = true;
             }
         }
@@ -2132,19 +2014,11 @@ fn apply_text_step(
 }
 
 /// Keyboard handling while a text layer is being edited.
-fn text_edit(
-    app: &mut FilmcraftApp,
-    ui: &mut egui::Ui,
-    v: &LayerView,
-    ed: GfxEdit,
-    resp: &egui::Response,
-    actions: &mut Vec<(String, Value)>,
-    pending_ime: &mut Option<PendingImeEdit>,
-) {
+fn text_edit(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &LayerView, ed: GfxEdit, resp: &egui::Response, actions: &mut Vec<(String, Value)>) {
     let _ = resp;
     let window_focused = ui.input(|input| input.viewport().focused.unwrap_or(input.focused));
     if !window_focused || app.ime_modal_blocks_input() || !ui.is_enabled() {
-        app.suspended_ime_controls(ui.ctx());
+        ime_off(app, ui);
         return;
     }
     // moving to another panel ends the edit; Properties and Essential Graphics style the text
@@ -2156,7 +2030,7 @@ fn text_edit(
     ui.data_mut(|d| d.insert_temp(panel_id, app.ui.focused));
     if before.is_some_and(|b| b != app.ui.focused) && !matches!(app.ui.focused, PanelKind::Program | PanelKind::Properties | PanelKind::EssentialGraphics) {
         end_edit(app, ui);
-        app.suspended_ime_controls(ui.ctx());
+        ime_off(app, ui);
         return;
     }
     let eid = egui::Id::unique(TEXT_EDIT_ID);
@@ -2166,7 +2040,7 @@ fn text_edit(
     // while another field has the keyboard (a value typed in Properties) the keys are its own;
     // the text takes the keyboard back once nothing has it (#683)
     if ui.memory(|m| m.focused().is_some_and(|f| f != eid)) {
-        app.suspended_ime_controls(ui.ctx());
+        ime_off(app, ui);
         return;
     }
     ui.memory_mut(|m| {
@@ -2174,19 +2048,10 @@ fn text_edit(
         m.set_focus_lock_filter(eid, egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true });
     });
     let Some(tp) = text_of(&v.spec) else {
-        app.suspended_ime_controls(ui.ctx());
+        ime_off(app, ui);
         return;
     };
-    let mut state = TextEditState {
-        ed,
-        text: tp.text.clone(),
-        changed: false,
-        stop: false,
-        application_mutation: false,
-        custom_mutations: true,
-        ime_before: None,
-        ime_after: Vec::new(),
-    };
+    let mut state = TextEditState { ed, text: tp.text.clone(), changed: false, stop: false, custom_mutations: true };
     // `ui.set.gfxEdit` accepts arbitrary byte offsets. Clamp both ends to UTF-8 boundaries here,
     // before any slice/replace_range/insert_str, so hostile offsets can never panic the editor.
     clamp_edit_offsets(&state.text, &mut state.ed);
@@ -2195,6 +2060,11 @@ fn text_edit(
     let sequence = app.session.state.active_sequence.map_or(0, |sequence| sequence.0);
     let composition_target = graphics_ime_target(sequence, state.ed.clip, state.ed.layer, v.spec.uid, app.ime_replacement_epoch);
     let viewport = ui.ctx().viewport_id();
+    if app.ime_composer_target != Some(composition_target) {
+        app.ime_composer.discard(ui.ctx());
+        app.ime_composer = craft_ui::ime::Composer::new().with_owner(composition_target.owner);
+        app.ime_composer_target = Some(composition_target);
+    }
     // A command, a control request or a caret move ended the composition: the composer drops
     // its copy of the marked text, and a late commit of it.
     if app.ime_composer.is_composing()
@@ -2202,6 +2072,11 @@ fn text_edit(
     {
         app.ime_composer.discard(ui.ctx());
     }
+    // The composer turns the IME on and publishes its descriptor; the editor runs the events
+    // through it below, between the fence's per-event checks.
+    let held = ui.ctx().input_mut(|i| std::mem::take(&mut i.events));
+    let _ = app.ime_composer.update(ui.ctx(), true);
+    ui.ctx().input_mut(|i| i.events = held);
     // Reset completions and the fence's admission run per raw event. A pointer press is
     // handled later in this pass (caret placement, another layer, or ending the edit): the
     // composer sees it, so a composition keeps its marked text, and the events after it
@@ -2249,33 +2124,21 @@ fn text_edit(
         app.invalidate_ime_composition();
     }
     if state.changed && state.text != tp.text {
-        let action_index = actions.len();
-        let ime_before = state.ime_before;
-        let first_before =
-            ime_before.and_then(|(cursor, anchor)| (!state.ime_after.is_empty()).then(|| ImeMutationStamp::from_committed(&tp.text, cursor, anchor, None)));
-
-        *pending_ime = Some(PendingImeEdit {
-            action_index,
-            clip: state.ed.clip,
-            layer: state.ed.layer,
-            first_before,
-            before_cursor: ime_before.map_or(state.ed.caret, |(cursor, _)| cursor),
-            before_anchor: ime_before.map_or(state.ed.anchor, |(_, anchor)| anchor),
-            final_cursor: state.ed.caret,
-            final_anchor: state.ed.anchor,
-            application_mutation: state.application_mutation,
-            after: state.ime_after,
-        });
         let text = std::mem::take(&mut state.text);
         actions.push(("graphics.setText".into(), json!({"clip": state.ed.clip, "layer": state.ed.layer, "text": text, "merge": true})));
-    } else {
-        *pending_ime = None;
     }
     if state.stop {
         end_edit(app, ui);
     } else {
         app.ui.gfx_edit = Some(state.ed);
     }
+}
+
+/// The editor doesn't take the keyboard in this pass: the composer turns the IME off, and the
+/// fence's controls stay inert.
+fn ime_off(app: &mut FilmcraftApp, ui: &egui::Ui) {
+    let _ = app.ime_composer.update(ui.ctx(), false);
+    app.suspended_ime_controls(ui.ctx());
 }
 
 /// Clamp an edit caret/anchor to valid UTF-8 boundaries (hostile `ui.set.gfxEdit` offsets).
@@ -3240,30 +3103,6 @@ mod ime_byte_delete_tests {
         assert_eq!(next_n_chars(&s, 1, 1), 3);
     }
 
-    /// The IME context tracker keeps per-viewport generations, leaves other viewports untouched
-    /// and drops a closed viewport's state when it is observed again.
-    #[test]
-    fn tracker_state_is_scoped_per_viewport_and_closed_viewports_are_dropped() {
-        use egui::ViewportId;
-        use egui::ime_context::{CommittedText, ImeContextTracker, ImeObservation};
-
-        let mut tracker = ImeContextTracker::new();
-        let target = graphics_ime_target(7, 11, 3, 42, 5);
-        let first_viewport = ViewportId::ROOT;
-        let second_viewport = ViewportId::from_hash_of("filmcraft-ime-second-viewport");
-        let observe = |tracker: &mut ImeContextTracker, viewport| {
-            tracker.observe(viewport, Some(ImeObservation::new(0, 0, target).committed(Some(CommittedText::new("one", 3, 3)))))
-        };
-        let first = observe(&mut tracker, first_viewport).expect("first viewport is observed");
-        let second = observe(&mut tracker, second_viewport).expect("second viewport is observed");
-        assert_ne!(first.context_generation, second.context_generation, "each viewport owns its generation");
-        let repeated = observe(&mut tracker, first_viewport).expect("first viewport remains observed");
-        assert_eq!(repeated.context_generation, first.context_generation, "a second viewport does not disturb the first");
-        tracker.end_viewport(second_viewport);
-        let reopened = observe(&mut tracker, second_viewport).expect("the viewport can be observed again");
-        assert_ne!(reopened.context_generation, second.context_generation, "closed viewport state is dropped");
-    }
-
     /// The graphics IME owner prefers stable uid identity, falls back to the layer index only
     /// without a uid, and separates sequence and replacement epochs.
     #[test]
@@ -3345,17 +3184,15 @@ mod ime_byte_delete_tests {
             ..Default::default()
         };
         let mut actions = Vec::new();
-        let mut pending_ime = None;
         let mut focused = false;
         let mut out = ctx.run_ui(raw, |ui| {
             let response = ui.allocate_response(egui::vec2(100.0, 100.0), egui::Sense::click());
-            super::text_edit(&mut app, ui, &view, ed.clone(), &response, &mut actions, &mut pending_ime);
+            super::text_edit(&mut app, ui, &view, ed.clone(), &response, &mut actions);
             focused = ui.memory(|m| m.has_focus(egui::Id::unique(super::TEXT_EDIT_ID)));
         });
         out.textures_delta.clear();
 
         assert!(focused, "the text editor must own input for this batch");
         assert!(actions.is_empty(), "the pointer press must stop Text, Paste and IME editing the old layer");
-        assert!(pending_ime.is_none(), "a rejected batch has no pending IME edit");
     }
 }

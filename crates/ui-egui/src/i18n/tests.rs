@@ -201,7 +201,7 @@ fn sources() -> Vec<(String, String)> {
             let p = entry.path();
             if p.is_dir() {
                 dirs.push(p);
-            } else if p.extension().is_some_and(|e| e == "rs") {
+            } else if p.extension().is_some_and(|e| e == "rs") && p.file_name().is_some_and(|n| n != "tests.rs") {
                 // a Windows checkout with core.autocrlf has CRLF, which the `\n` below would not match
                 let text = std::fs::read_to_string(&p).unwrap_or_default().replace("\r\n", "\n");
                 let cut = text.find("#[cfg(test)]\nmod tests").unwrap_or(text.len());

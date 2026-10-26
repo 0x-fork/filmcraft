@@ -140,8 +140,7 @@ fn placed_auto_points_resolve_once_the_source_size_is_final() {
     }
     let st = p.sequence(seq).unwrap().settings.clone();
     let point = |p: &Project, id: ClipId, k: &str| p.sequence(seq).unwrap().find_item(id).unwrap().1.effect("motion").unwrap().vec2_at(k, Tick::ZERO);
-    let (frame_centre, source_centre) =
-        (Vec2::new(st.width as f64 / 2.0, st.height as f64 / 2.0), Vec2::new(src.width as f64 / 2.0, src.height as f64 / 2.0));
+    let (frame_centre, source_centre) = (Vec2::new(st.width as f64 / 2.0, st.height as f64 / 2.0), Vec2::new(src.width as f64 / 2.0, src.height as f64 / 2.0));
     // sequences that are not selected are left alone
     let mut untouched = p.clone();
     untouched.resolve_placed_auto_points(|_| false, |_| true);

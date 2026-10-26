@@ -41,12 +41,9 @@ fn http_request_closes_before_the_body_runs() {
 
 #[test]
 fn non_request_json_closes_the_connection() {
-    for junk in [
-        &b"[1,2]\n{\"method\":\"a\"}\n"[..],
-        b"{\"id\":1}\n{\"method\":\"a\"}\n",
-        b"{\"method\":5}\n{\"method\":\"a\"}\n",
-        b"\xff\xfe\n{\"method\":\"a\"}\n",
-    ] {
+    for junk in
+        [&b"[1,2]\n{\"method\":\"a\"}\n"[..], b"{\"id\":1}\n{\"method\":\"a\"}\n", b"{\"method\":5}\n{\"method\":\"a\"}\n", b"\xff\xfe\n{\"method\":\"a\"}\n"]
+    {
         let (r, calls) = run(junk);
         assert!(calls.is_empty(), "{calls:?}");
         assert_eq!(r.len(), 1);
@@ -246,8 +243,7 @@ fn missing_or_invalid_token_leaves_the_listener_closed() {
 
 #[test]
 fn unauthenticated_save_as_closes_before_any_command_runs() {
-    for token in
-        [Value::Null, json!(false), json!(42), json!([]), json!({}), json!(""), json!("a".repeat(64)), json!(&TOKEN[..63]), json!(format!("{TOKEN}0"))]
+    for token in [Value::Null, json!(false), json!(42), json!([]), json!({}), json!(""), json!("a".repeat(64)), json!(&TOKEN[..63]), json!(format!("{TOKEN}0"))]
     {
         let mut request = json!({"id": 1, "method": "engine.execute", "params": {"command": "file.saveAs", "params": {"path": "/owner/project.fcproj"}}});
         if !token.is_null() {
@@ -263,12 +259,8 @@ fn unauthenticated_save_as_closes_before_any_command_runs() {
 
 #[test]
 fn authentication_is_required_on_every_request() {
-    let input = format!(
-        "{}\n{}\n{}\n",
-        json!({"token": TOKEN, "method": "ui.inspect"}),
-        json!({"method": "app.quit"}),
-        json!({"token": TOKEN, "method": "app.quit"})
-    );
+    let input =
+        format!("{}\n{}\n{}\n", json!({"token": TOKEN, "method": "ui.inspect"}), json!({"method": "app.quit"}), json!({"token": TOKEN, "method": "app.quit"}));
     let (replies, calls) = run(input.as_bytes());
     assert_eq!(calls, ["ui.inspect"]);
     assert_eq!(replies.len(), 2);

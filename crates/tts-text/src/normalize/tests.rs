@@ -71,10 +71,7 @@ fn cardinals() {
         words("999,999,999,999", Lang::EnUs),
         "nine hundred ninety-nine billion nine hundred ninety-nine million nine hundred ninety-nine thousand nine hundred ninety-nine"
     );
-    assert_eq!(
-        words("123456789012", Lang::EnUs),
-        "one hundred twenty-three billion four hundred fifty-six million seven hundred eighty-nine thousand twelve"
-    );
+    assert_eq!(words("123456789012", Lang::EnUs), "one hundred twenty-three billion four hundred fifty-six million seven hundred eighty-nine thousand twelve");
 }
 
 #[test]

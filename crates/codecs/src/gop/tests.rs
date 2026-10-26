@@ -409,11 +409,7 @@ fn a_burst_of_single_requests_does_not_keep_every_decoder_and_frame() {
         assert_eq!(index_of(&c[k].frame(&s[k], 10_000).expect("frame")), 10);
         std::thread::sleep(Duration::from_millis(3));
     }
-    assert!(
-        pool.decoders.load(Ordering::Relaxed) <= HARD_DECODERS + 1,
-        "{} live decoders after a burst over {n} clips",
-        pool.decoders.load(Ordering::Relaxed)
-    );
+    assert!(pool.decoders.load(Ordering::Relaxed) <= HARD_DECODERS + 1, "{} live decoders after a burst over {n} clips", pool.decoders.load(Ordering::Relaxed));
     // the clip asked last, and a clip in use together with it, keep theirs and carry on
     let resets = s[n - 1].resets.load(Ordering::Relaxed);
     assert_eq!(index_of(&c[n - 1].frame(&s[n - 1], 11_000).expect("frame")), 11);

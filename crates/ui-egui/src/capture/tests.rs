@@ -15,13 +15,7 @@ fn app() -> FilmcraftApp {
 /// A fixed 800×600, 1 px/pt capture identity for the app's current document with no focus.
 fn geometry(app: &FilmcraftApp) -> CaptureGeometry {
     CaptureGeometry {
-        surface: SurfaceGeometry {
-            viewport: Some(egui::vec2(800.0, 600.0)),
-            pixels_per_point: 1.0,
-            max_texture_side: 8192,
-            minimized: false,
-            occluded: false,
-        },
+        surface: SurfaceGeometry { viewport: Some(egui::vec2(800.0, 600.0)), pixels_per_point: 1.0, max_texture_side: 8192, minimized: false, occluded: false },
         document: active_document(app),
         focus: None,
     }
@@ -142,10 +136,7 @@ fn downscaled_capture_crops_with_the_rendered_scale() {
     assert_eq!([reply["result"]["width"].as_u64(), reply["result"]["height"].as_u64()], [Some(200), Some(100)]);
     let decoded = image::load_from_memory(&std::fs::read(&path).expect("the saved crop")).expect("decode the saved crop").to_rgba8();
     assert_eq!(decoded.dimensions(), (200, 100));
-    assert!(
-        decoded.pixels().all(|pixel| *pixel == image::Rgba([255, 0, 0, 255])),
-        "the crop must select the red region where the downscaled surface drew it"
-    );
+    assert!(decoded.pixels().all(|pixel| *pixel == image::Rgba([255, 0, 0, 255])), "the crop must select the red region where the downscaled surface drew it");
 }
 
 /// A 1.5x surface whose point size rounds up by one window pixel is still uncapped, so its
@@ -265,13 +256,7 @@ fn near_limit_images_are_rejected_for_encode_buffer_memory() {
     // 8000×4000 RGBA is exactly 128,000,000 raw bytes, under the per-image bound, but the
     // crop/PNG/base64 copies make its real peak several times larger than the aggregate bound.
     app.capture_geometry = Some(CaptureGeometry {
-        surface: SurfaceGeometry {
-            viewport: Some(vec2(8000.0, 4000.0)),
-            pixels_per_point: 1.0,
-            max_texture_side: 16384,
-            minimized: false,
-            occluded: false,
-        },
+        surface: SurfaceGeometry { viewport: Some(vec2(8000.0, 4000.0)), pixels_per_point: 1.0, max_texture_side: 16384, minimized: false, occluded: false },
         document: active_document(&app),
         focus: None,
     });
@@ -370,13 +355,7 @@ fn mixed_order_geometry_failures_reject_every_shot_without_shifting_indices() {
     // A resize makes both queued shots need more crop/encode buffers than the aggregate
     // budget, so the geometry retry fails for the last shot first.
     app.capture_geometry = Some(CaptureGeometry {
-        surface: SurfaceGeometry {
-            viewport: Some(vec2(8000.0, 4000.0)),
-            pixels_per_point: 1.0,
-            max_texture_side: 16384,
-            minimized: false,
-            occluded: false,
-        },
+        surface: SurfaceGeometry { viewport: Some(vec2(8000.0, 4000.0)), pixels_per_point: 1.0, max_texture_side: 16384, minimized: false, occluded: false },
         document: active_document(&app),
         focus: None,
     });

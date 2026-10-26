@@ -104,8 +104,7 @@ fn parses_cmudict() {
 
 #[test]
 fn skips_malformed_lines_and_counts_them() {
-    let input =
-        b";;; a comment\n\nGOOD  AE1\nBADLINE\nONLYWORD\nWORD  XX1 YY2\nBAD(  AE1\nWORD(2)  AA1\nWORD  AE1 # trailing comment\nTRAIL  AE1 T # note\n";
+    let input = b";;; a comment\n\nGOOD  AE1\nBADLINE\nONLYWORD\nWORD  XX1 YY2\nBAD(  AE1\nWORD(2)  AA1\nWORD  AE1 # trailing comment\nTRAIL  AE1 T # note\n";
     let lex = Lexicon::parse_cmudict(input).unwrap();
     assert_eq!(lex.len(), 3); // GOOD, WORD (two pronunciations), TRAIL
     assert_eq!(lex.skipped(), 4); // BADLINE, ONLYWORD, WORD XX1 YY2, BAD(
@@ -284,10 +283,7 @@ fn chunks_are_bounded_and_split_at_punctuation() {
     // The split happened at commas: no chunk ends mid-word.
     for c in &chunks[..chunks.len() - 1] {
         let Chunk::Phonemes(p) = c else { continue };
-        assert!(
-            p.ends_with(',') || p.ends_with(';') || p.ends_with(':') || p.ends_with('w') || p.ends_with("ʌn") || p.ends_with("tˈu"),
-            "bad split: {p:?}"
-        );
+        assert!(p.ends_with(',') || p.ends_with(';') || p.ends_with(':') || p.ends_with('w') || p.ends_with("ʌn") || p.ends_with("tˈu"), "bad split: {p:?}");
     }
 }
 

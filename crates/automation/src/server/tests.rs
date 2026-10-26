@@ -142,8 +142,7 @@ async fn strict_arguments_and_parse_errors() {
     let r = c.ask(json!({"jsonrpc":"2.0","id":6,"method":"ping"})).await;
     assert!(r["result"].is_object(), "{r}");
     // batch: stops at the first failure and reports both
-    let r =
-        c.call(7, "command_batch", json!({"steps": [{"id": "playhead.set", "params": {"seconds": 0.5}}, {"id": "no.such"}, {"id": "playhead.set"}]})).await;
+    let r = c.call(7, "command_batch", json!({"steps": [{"id": "playhead.set", "params": {"seconds": 0.5}}, {"id": "no.such"}, {"id": "playhead.set"}]})).await;
     assert_eq!(r["result"]["isError"], true, "{r}");
     let v: Value = serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!((v["completed"].as_u64(), v["failed"].as_u64(), v["results"].as_array().map(Vec::len)), (Some(1), Some(1), Some(2)), "{v}");

@@ -52,8 +52,7 @@ fn duration_follows_the_edit_list() {
     let skip = vec![Edit { segment_duration: 120, media_time: 1, media_rate: 0x10000 }];
     assert_eq!(frames(&Mp4Source::open("skip.mov", mov_with_edits(skip)).expect("open")), 3);
     // a one-frame empty edit, then all four frames: five frames, and the last one is there
-    let delayed =
-        vec![Edit { segment_duration: 40, media_time: -1, media_rate: 0x10000 }, Edit { segment_duration: 160, media_time: 0, media_rate: 0x10000 }];
+    let delayed = vec![Edit { segment_duration: 40, media_time: -1, media_rate: 0x10000 }, Edit { segment_duration: 160, media_time: 0, media_rate: 0x10000 }];
     let s = Mp4Source::open("delayed.mov", mov_with_edits(delayed)).expect("open");
     assert_eq!(frames(&s), 5);
     assert!(s.video_frame(FrameRequest::full(Tick::from_rational(4, 1, 25))).is_ok());
@@ -263,8 +262,7 @@ fn high_sps(profile: u8, chroma: u32, bits: u32) -> Vec<u8> {
 
 #[test]
 fn avc_pixel_format_comes_from_avcc_not_the_profile() {
-    let avc =
-        |profile: u8, sps: Vec<u8>, ext: Vec<u8>| CodecConfig::Avc(filmcraft_isobmff::AvcConfig { profile, sps: vec![sps], ext, ..Default::default() });
+    let avc = |profile: u8, sps: Vec<u8>, ext: Vec<u8>| CodecConfig::Avc(filmcraft_isobmff::AvcConfig { profile, sps: vec![sps], ext, ..Default::default() });
     // High 4:2:2 at 10 and 8 bits, from the avcC extension (chroma_format 2, bit_depth_luma_minus8)
     assert_eq!(pixfmt_label(&avc(122, high_sps(122, 2, 10), vec![0xFE, 0xFA, 0xFA, 0])), "YUV 4:2:2 10-bit");
     assert_eq!(pixfmt_label(&avc(122, high_sps(122, 2, 8), vec![0xFE, 0xF8, 0xF8, 0])), "YUV 4:2:2 8-bit");

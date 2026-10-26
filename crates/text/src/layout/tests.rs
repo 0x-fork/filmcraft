@@ -198,10 +198,7 @@ fn vertical_cells_keep_combining_marks_with_their_base() {
     assert_eq!(decomposed.lines[0].range, 0..3);
     assert_eq!(decomposed.lines[1].range, 3..4);
     assert_eq!(decomposed.text_len, 4, "retain the original UTF-8 source offsets");
-    assert_eq!(
-        decomposed.glyphs.iter().map(|g| (g.id, g.x, g.y)).collect::<Vec<_>>(),
-        composed.glyphs.iter().map(|g| (g.id, g.x, g.y)).collect::<Vec<_>>()
-    );
+    assert_eq!(decomposed.glyphs.iter().map(|g| (g.id, g.x, g.y)).collect::<Vec<_>>(), composed.glyphs.iter().map(|g| (g.id, g.x, g.y)).collect::<Vec<_>>());
     assert_eq!(decomposed.bounds, composed.bounds);
     assert_eq!(decomposed.caret(0).1, decomposed.caret(1).1, "base and combining mark occupy the same cell");
     for text in ["葛\u{e0101}x", "👩\u{200d}👧x"] {

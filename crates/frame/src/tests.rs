@@ -234,10 +234,7 @@ fn sample_frames_sized(w: usize, h: usize) -> Vec<(&'static str, VideoFrame)> {
                 alpha: Some(Arc::new(a16)),
             }),
         ),
-        (
-            "yuv16 4:4:4",
-            mk(PixelData::Yuv16 { planes: [Arc::new(y16), Arc::new(c16.clone()), Arc::new(c16)], chroma: Chroma::C444, bits: 12, alpha: None }),
-        ),
+        ("yuv16 4:4:4", mk(PixelData::Yuv16 { planes: [Arc::new(y16), Arc::new(c16.clone()), Arc::new(c16)], chroma: Chroma::C444, bits: 12, alpha: None })),
     ]
 }
 

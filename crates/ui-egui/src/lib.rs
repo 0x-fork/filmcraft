@@ -838,6 +838,31 @@ impl FilmcraftApp {
         self.ime_reset.finish(ctx, destination, self.ime_reset.owns_output(ctx));
     }
 
+    /// [`Self::ui`]'s end-of-pass IME check for a native floating window, after its last panel
+    /// body: the Program monitor's editor, when it was drawn there, keeps or drops the
+    /// composer's descriptor, and the window's reset fence suspends or rearms.
+    pub(crate) fn finish_ime_window(&mut self, ctx: &egui::Context) {
+        let viewport = ctx.viewport_id();
+        if self.ime_drawn_editor.as_ref().is_none_or(|drawn| drawn.viewport != viewport) {
+            self.ime_reset.suspend(viewport);
+            return;
+        }
+        self.ime_reset.viewport = viewport;
+        let focused = ctx.input(|input| input.viewport().focused.unwrap_or(input.focused));
+        let eligible = panels::graphics::finish_graphics_ime(self, ctx, false) && focused;
+        let destination = panels::graphics::current_reset_destination(self);
+        if !eligible {
+            self.suspend_ime_input(ctx);
+            self.ime_reset.finish_window(ctx, None, None);
+            return;
+        }
+        if let Some(destination) = destination {
+            self.sync_live_ime_destination(ctx, destination);
+        }
+        let output = self.ime_composer_target.and_then(|target| ime_reset::published(ctx, target.owner));
+        self.ime_reset.finish_window(ctx, destination, output);
+    }
+
     /// Notice a document replacement or an active-sequence change that did not emit
     /// `OpenSequence` (`file.newProject`, a project with no sequence, `sequence.close`). The
     /// edit target and any in-flight composition belong to the old context.
@@ -866,7 +891,7 @@ impl FilmcraftApp {
     }
 
     /// The main window's end-of-pass check of the Program monitor's editor, after the pass's
-    /// control requests ran.
+    /// control requests ran. Native floating windows ran theirs in [`Self::finish_ime_window`].
     pub(crate) fn finish_ime_pass(&mut self, ctx: &egui::Context) {
         let _ = panels::graphics::finish_graphics_ime(self, ctx, true);
     }

@@ -63,6 +63,7 @@ pub mod source_playback;
 pub mod state;
 pub mod theme;
 mod theme_favorites;
+pub mod updates_ui;
 pub mod widgets;
 
 use std::collections::HashMap;
@@ -302,6 +303,7 @@ pub struct FilmcraftApp {
     pub scrub: scrub::ScrubAudio,
     pub hooks: HostHooks,
     pub dialog: Option<Dialog>,
+    pub(crate) updates_rt: updates_ui::Runtime,
     pub file_dialogs: panels::file_dialogs::FileDialogState,
     /// The native file dialog the host is showing ([`Self::pick`]).
     native_dialog: Option<native_dialogs::PendingDialog>,
@@ -641,6 +643,7 @@ impl FilmcraftApp {
             hooks: HostHooks::default(),
             // Unsaved changes left by a session that died are offered first thing.
             dialog: recovery.then_some(Dialog::Recovery),
+            updates_rt: Default::default(),
             file_dialogs: Default::default(),
             native_dialog: None,
             auto: Default::default(),
@@ -1833,12 +1836,18 @@ impl FilmcraftApp {
 
     /// Sends the menu tree to the native menu bar when it changed, so its items show the same
     /// labels, shortcuts and enablement as the in-window menus (Undo with nothing to undo is
-    /// disabled). Without a native menu bar this does nothing.
-    fn sync_native_menu(&mut self) {
+    /// disabled). The items a focused text field takes stay enabled while one has the keyboard.
+    /// Without a native menu bar this does nothing.
+    fn sync_native_menu(&mut self, ctx: &egui::Context) {
         if self.hooks.menu_changed.is_none() {
             return;
         }
-        let items = menus::menu_items(self);
+        let mut items = menus::menu_items(self);
+        if menus::text_field_window(ctx).is_some() {
+            for it in items.iter_mut().filter(|it| menus::edits_text(&it.id)) {
+                it.enabled = true;
+            }
+        }
         if items == self.menu_sent {
             return;
         }
@@ -2197,6 +2206,7 @@ impl FilmcraftApp {
         // the Timeline has had its chance to place a file drop this frame; anything left stays a bin import
         self.pending_timeline_drop = None;
         panels::dialogs::show(self, &ctx);
+        updates_ui::show(self, &ctx);
         if !self.ui.show_status_bar {
             return;
         }
@@ -2521,6 +2531,7 @@ impl FilmcraftApp {
             ctx.request_repaint_after(std::time::Duration::from_secs(1));
         }
         self.sync_pool();
+        updates_ui::tick(self, ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.tick_media_refresh(ctx, now);
     }
@@ -2556,7 +2567,7 @@ impl FilmcraftApp {
                 if self.control_input_only && id != "app.quit" {
                     continue;
                 }
-                if let Err(e) = menus::invoke(self, ctx, &id, json!({})) {
+                if let Err(e) = menus::activate_native(self, ctx, &id) {
                     self.ui.status = e;
                 }
             }
@@ -2636,7 +2647,7 @@ impl FilmcraftApp {
             self.begin_press(&ctx);
             self.latch_escape_cancel(&ctx);
             self.handle_shortcuts(&ctx);
-            self.sync_native_menu();
+            self.sync_native_menu(&ctx);
             self.scrub_audio(&ctx);
         } else {
             // Pass 1+ redraws the same frame; drop the discarded pass's registrations so lookups
@@ -3170,15 +3181,26 @@ mod audio_recovery_tests {
                 Some(4_800)
             }
         }
-        let amplitude = |samples: &[f32], ch: usize, hz: f64| {
-            let (mut re, mut im) = (0.0, 0.0);
-            for (i, frame) in samples.as_chunks::<2>().0.iter().enumerate() {
-                let phase = std::f64::consts::TAU * hz * i as f64 / 48_000.0;
-                re += f64::from(frame[ch]) * phase.cos();
-                im += f64::from(frame[ch]) * phase.sin();
+        fn assert_shuttle_tones(buf: &[f32], maintain: bool, speed: f64) {
+            let amplitude = |samples: &[f32], ch: usize, hz: f64| {
+                let (mut re, mut im) = (0.0, 0.0);
+                for (i, frame) in samples.as_chunks::<2>().0.iter().enumerate() {
+                    let phase = std::f64::consts::TAU * hz * i as f64 / 48_000.0;
+                    re += f64::from(frame[ch]) * phase.cos();
+                    im += f64::from(frame[ch]) * phase.sin();
+                }
+                2.0 * re.hypot(im) / (samples.len() / 2) as f64
+            };
+            for (ch, tone) in [440.0, 660.0].into_iter().enumerate() {
+                let hz = if maintain { tone } else { tone * speed };
+                let level = amplitude(buf, ch, hz);
+                assert!(level > 0.08, "maintain={maintain}, speed={speed}, channel={ch}: {hz} Hz level={level}");
+                if speed != 1.0 {
+                    let wrong = if maintain { tone * speed } else { tone };
+                    assert!(amplitude(buf, ch, wrong) < level * 0.3, "wrong pitch {wrong} Hz at {speed}x, maintain={maintain}");
+                }
             }
-            2.0 * re.hypot(im) / (samples.len() / 2) as f64
-        };
+        }
         let mut session = Session::default();
         session.execute("file.newSequence", json!({"width":16,"height":16})).unwrap();
         let inter: Vec<f32> =
@@ -3199,15 +3221,7 @@ mod audio_recovery_tests {
                 app.end_preroll(0.0);
                 assert!(app.playback.audio_clock);
                 let buf = samples.lock().unwrap();
-                for (ch, tone) in [440.0, 660.0].into_iter().enumerate() {
-                    let hz = if maintain { tone } else { tone * speed };
-                    let level = amplitude(&buf, ch, hz);
-                    assert!(level > 0.08, "maintain={maintain}, speed={speed}, channel={ch}: {hz} Hz level={level}");
-                    if speed != 1.0 {
-                        let wrong = if maintain { tone * speed } else { tone };
-                        assert!(amplitude(&buf, ch, wrong) < level * 0.3, "wrong pitch {wrong} Hz at {speed}x, maintain={maintain}");
-                    }
-                }
+                assert_shuttle_tones(&buf, maintain, speed);
                 if speed == 1.0 {
                     if let Some(previous) = &normal {
                         assert_eq!(&*buf, previous, "1x must bypass pitch processing");
@@ -3559,23 +3573,24 @@ mod native_menu_tests {
         let mut app = FilmcraftApp::new(Session::default());
         let sink = sent.clone();
         app.hooks.menu_changed = Some(Box::new(move |items: &[menus::MenuItem]| sink.borrow_mut().push(items.to_vec())));
+        let ctx = egui::Context::default();
 
-        app.sync_native_menu();
+        app.sync_native_menu(&ctx);
         let last = |sent: &Rc<RefCell<Vec<Vec<menus::MenuItem>>>>, id: &str| sent.borrow().last().and_then(|items| enabled(items, id));
         assert_eq!(last(&sent, "edit.undo"), Some(false), "nothing to undo in an empty project");
         assert_eq!(last(&sent, "edit.redo"), Some(false), "nothing to redo in an empty project");
         assert_eq!(last(&sent, "file.newProject"), Some(true));
 
-        app.sync_native_menu();
+        app.sync_native_menu(&ctx);
         assert_eq!(sent.borrow().len(), 1, "an unchanged menu is not sent again");
 
         app.session.execute("file.newSequence", json!({"width":16,"height":16})).unwrap();
-        app.sync_native_menu();
+        app.sync_native_menu(&ctx);
         assert_eq!(last(&sent, "edit.undo"), Some(true), "an edit can be undone");
         assert_eq!(last(&sent, "edit.redo"), Some(false));
 
         app.session.execute("edit.undo", json!({})).unwrap();
-        app.sync_native_menu();
+        app.sync_native_menu(&ctx);
         assert_eq!(last(&sent, "edit.undo"), Some(false));
         assert_eq!(last(&sent, "edit.redo"), Some(true), "the undone edit can be redone");
     }

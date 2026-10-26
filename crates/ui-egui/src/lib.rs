@@ -320,6 +320,9 @@ pub struct FilmcraftApp {
     pub(crate) ime_composition: Option<ImeComposition>,
     ime_reset: ime_reset::State,
     ime_composition_viewport: Option<egui::ViewportId>,
+    /// The input method at the Program monitor's text caret: event order, the keys it uses and
+    /// the marked text drawn on the video until it commits.
+    pub(crate) ime_composer: craft_ui::ime::Composer,
     /// The editor drawn in this pass; the final observation runs after control drain.
     pub(crate) ime_drawn_editor: Option<panels::graphics::DrawnImeEditor>,
     /// Project document generation last seen by the UI (the engine bumps it on replacement).
@@ -647,6 +650,7 @@ impl FilmcraftApp {
             ime_composition: None,
             ime_reset: Default::default(),
             ime_composition_viewport: None,
+            ime_composer: craft_ui::ime::Composer::new(),
             ime_drawn_editor: None,
             ime_document_epoch,
             ime_active_sequence,

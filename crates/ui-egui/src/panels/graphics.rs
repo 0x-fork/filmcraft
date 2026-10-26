@@ -78,6 +78,52 @@ pub(crate) struct DrawnImeEditor {
     pub cursor_rect: Rect,
 }
 
+/// The most marked text drawn; an input method's composition is a few words.
+const MAX_PREEDIT_BYTES: usize = 1024;
+
+/// What [`draw_preedit`] drew, for automation: the plate with the marked text, and the active
+/// clause's rectangle and text.
+struct DrawnPreedit {
+    plate: Rect,
+    text: String,
+    clause: Option<(Rect, String)>,
+}
+
+/// Draw the marked text from the caret line `top`–`bottom` until it commits: on a dark plate,
+/// underlined, with a heavier underline under the clause being converted, or a caret where an
+/// empty active range puts it.
+fn draw_preedit(painter: &egui::Painter, top: Pos2, bottom: Pos2, preedit: craft_ui::ime::Preedit<'_>) -> DrawnPreedit {
+    let text = preedit.text.get(..char_boundary_floor(preedit.text, MAX_PREEDIT_BYTES)).unwrap_or_default();
+    let chars = text.chars().count();
+    let active = preedit.active.map(|r| {
+        let start = r.start.min(chars);
+        start..r.end.clamp(start, chars)
+    });
+    let height = (bottom - top).length();
+    let size = if height.is_finite() { (height * 0.7).clamp(8.0, 256.0) } else { 12.0 };
+    let galley = painter.layout_no_wrap(text.to_string(), egui::FontId::proportional(size), Color32::WHITE);
+    let plate = Rect::from_min_size(top, galley.size());
+    painter.rect_filled(plate.expand(2.0), 2.0, Color32::from_black_alpha(160));
+    let x = |at: usize| top.x + galley.pos_from_cursor(egui::text::CCursor::new(at)).min.x;
+    let y = plate.bottom();
+    painter.line_segment([pos2(plate.left(), y), pos2(plate.right(), y)], Stroke::new(1.0, Color32::WHITE));
+    let mut clause = None;
+    match active {
+        Some(r) if r.start < r.end => {
+            let (from, to) = (x(r.start), x(r.end));
+            painter.line_segment([pos2(from, y), pos2(to, y)], Stroke::new(3.0, Color32::WHITE));
+            clause = Some((Rect::from_min_max(pos2(from, plate.top()), pos2(to, y)), text.chars().skip(r.start).take(r.len()).collect()));
+        }
+        Some(r) => {
+            let at = x(r.start);
+            painter.line_segment([pos2(at, plate.top()), pos2(at, y)], Stroke::new(1.5, Color32::WHITE));
+        }
+        None => {}
+    }
+    painter.galley(top, galley, Color32::WHITE);
+    DrawnPreedit { plate, text: text.to_string(), clause }
+}
+
 /// Identity of committed text alone (no caret or selection).
 fn ime_text_stamp(text: &str) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -1039,8 +1085,21 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
         let (ascent, descent) = l.lines.get(li.min(l.lines.len().saturating_sub(1))).map_or((0.0, 0.0), |line| (line.ascent, line.descent));
         let (a, b) = (sp(&v.to_screen, x, base - ascent), sp(&v.to_screen, x, base + descent));
         let cursor_rect = Rect::from_two_pos(a, b);
-        painter.line_segment([a, b], Stroke::new(1.5, Color32::WHITE));
-        painter.line_segment([a + vec2(1.0, 0.0), b + vec2(1.0, 0.0)], Stroke::new(0.5, Color32::BLACK));
+        let sequence = app.session.state.active_sequence.map_or(0, |sequence| sequence.0);
+        let target = graphics_ime_target(sequence, v.clip.0, v.layer, v.spec.uid, app.ime_replacement_epoch);
+        let live = app.ime_composition == Some(crate::ImeComposition::Active(target)) && app.ime_composition_viewport == Some(ui.ctx().viewport_id());
+        match app.ime_composer.preedit().filter(|_| live).map(|preedit| draw_preedit(&painter, a, b, preedit)) {
+            Some(drawn) => {
+                app.auto.add("program.textEdit.preedit", drawn.plate, &drawn.text);
+                if let Some((rect, clause)) = drawn.clause {
+                    app.auto.add("program.textEdit.preedit.clause", rect, &clause);
+                }
+            }
+            None => {
+                painter.line_segment([a, b], Stroke::new(1.5, Color32::WHITE));
+                painter.line_segment([a + vec2(1.0, 0.0), b + vec2(1.0, 0.0)], Stroke::new(0.5, Color32::BLACK));
+            }
+        }
         let er = Rect::from_points(&v.quad()).union(cursor_rect);
         app.auto.add("program.textEdit", er, &tp.text);
         // Do not publish yet: `drain_ui_requests` later in this pass may run a command or replace
@@ -1156,8 +1215,8 @@ pub(crate) fn finish_graphics_ime(app: &mut FilmcraftApp, ctx: &egui::Context) -
     // selection with the owner and generation unchanged; the cursor rectangle is one pass old,
     // and the next pass refreshes it. Hostile offsets remain an explicit `Unavailable` snapshot.
     let frame_nr = ctx.cumulative_frame_nr_for(viewport);
-    // FilmCraft's committed text never contains the IME pre-edit (preedit events are UI-only),
-    // so there is no preedit range to remove. A hostile or not-yet-clamped `gfxEdit` offset that
+    // FilmCraft's committed text never contains the IME pre-edit (the composer's marked text is
+    // only drawn over the video), so there is no preedit range to remove. A hostile or not-yet-clamped `gfxEdit` offset that
     // is not a UTF-8 boundary is published as the explicit `Unavailable` snapshot, never as a
     // nearby guessed offset.
     let valid_offsets = ed.caret <= text.len() && ed.anchor <= text.len() && text.is_char_boundary(ed.caret) && text.is_char_boundary(ed.anchor);
@@ -1715,7 +1774,7 @@ fn begin_text_event(app: &mut FilmcraftApp, ui: &egui::Ui, state: &TextEditState
     Some((from_ime, terminal))
 }
 
-/// The per-event epilogue: remember or terminal-acknowledge an IME event's destination, or keep
+/// The per-step epilogue: remember or terminal-acknowledge an IME step's destination, or keep
 /// the live destination in sync for ordinary application edits.
 fn finish_text_event(app: &mut FilmcraftApp, ui: &egui::Ui, state: &TextEditState, target: ImeTarget, from_ime: bool, terminal: bool) {
     let current = local_reset_destination(app, &state.ed, &state.text, target);
@@ -1732,8 +1791,8 @@ fn finish_text_event(app: &mut FilmcraftApp, ui: &egui::Ui, state: &TextEditStat
 
 /// Track this viewport's IME preedit target. Empty preedit becomes `TerminalPending` so a
 /// following empty commit still belongs to the same composition; non-empty becomes `Active`.
-fn apply_preedit(app: &mut FilmcraftApp, ui: &egui::Ui, target: ImeTarget, text: &str) {
-    app.ime_composition_viewport = Some(ui.ctx().viewport_id());
+fn apply_preedit(app: &mut FilmcraftApp, viewport: egui::ViewportId, target: ImeTarget, text: &str) {
+    app.ime_composition_viewport = Some(viewport);
     if text.is_empty() {
         app.ime_composition = Some(crate::ImeComposition::TerminalPending(target));
     } else {
@@ -1982,47 +2041,93 @@ fn apply_key_event(
     EventFlow::Applied
 }
 
-/// Apply one already-admitted event. The match arms keep the original order and short-circuits;
-/// `Skip` reproduces the inline `continue` for stale or empty IME/text events.
-fn apply_text_event(
+/// One step for the editor, in the order the platform sent its events: an edit from
+/// [`craft_ui::ime::Composer`], or an empty input-method commit with nothing composing, which
+/// the composer drops but which replaces the selection here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TextStep {
+    Edit(craft_ui::ime::Edit),
+    EmptyCommit,
+}
+
+/// Run the admitted events through the composer. Returns the steps and whether the composer
+/// ended a composition the platform input method may still hold.
+fn compose(composer: &mut craft_ui::ime::Composer, events: &[egui::Event], time: f64) -> (Vec<TextStep>, bool) {
+    let mut steps = Vec::new();
+    let mut interrupted = false;
+    let mut start = 0;
+    for (i, event) in events.iter().enumerate() {
+        if !matches!(event, egui::Event::Ime(egui::ImeEvent::Commit(text)) if text.is_empty()) {
+            continue;
+        }
+        steps.extend(composer.process(events.get(start..i).unwrap_or_default(), time).edits.into_iter().map(TextStep::Edit));
+        interrupted |= composer.interrupted();
+        if composer.is_composing() {
+            start = i;
+        } else {
+            let _ = composer.process(std::slice::from_ref(event), time);
+            steps.push(TextStep::EmptyCommit);
+            start = i.saturating_add(1);
+        }
+    }
+    steps.extend(composer.process(events.get(start..).unwrap_or_default(), time).edits.into_iter().map(TextStep::Edit));
+    (steps, interrupted || composer.interrupted())
+}
+
+/// Whether a step is the input method's (`from_ime`) and ends its composition (`terminal`). An
+/// insert is the input method's when it is one of the batch's committed texts, which it takes.
+fn step_origin(step: &TextStep, commits: &mut Vec<String>) -> (bool, bool) {
+    use craft_ui::ime::Edit;
+    match step {
+        TextStep::EmptyCommit => (true, true),
+        TextStep::Edit(Edit::Insert(text)) => match commits.iter().position(|commit| commit == text) {
+            Some(i) => {
+                commits.remove(i);
+                (true, true)
+            }
+            None => (false, false),
+        },
+        TextStep::Edit(Edit::Preedit { .. } | Edit::DeleteSurrounding { .. } | Edit::DeleteSurroundingBytes { .. }) => (true, false),
+        TextStep::Edit(_) => (false, false),
+    }
+}
+
+/// Apply one step. `Skip` is a stale or empty input-method or text step, which leaves the IME
+/// destination as it was.
+fn apply_text_step(
     app: &mut FilmcraftApp,
     ui: &egui::Ui,
     state: &mut TextEditState,
     target: ImeTarget,
     layout: &filmcraft_text::Layout,
-    event: egui::Event,
+    step: TextStep,
+    from_ime: bool,
 ) -> EventFlow {
-    let is_cut = matches!(&event, egui::Event::Cut);
-    match event {
-        egui::Event::Ime(egui::ImeEvent::Preedit { text, .. }) => {
-            apply_preedit(app, ui, target, &text);
+    use craft_ui::ime::Edit;
+    let viewport = ui.ctx().viewport_id();
+    let edit = match step {
+        TextStep::EmptyCommit => return apply_ime_commit(app, state, target, ""),
+        TextStep::Edit(edit) => edit,
+    };
+    match edit {
+        Edit::Preedit { text, .. } => {
+            apply_preedit(app, viewport, target, &text);
             EventFlow::Applied
         }
         // text-input-v3/Wayland delete-surrounding arrives in UTF-8 bytes. Only whole
         // characters fully inside the reported range are deleted: a byte count that ends
         // inside a character leaves that character (the fork's contract), so a combining
         // accent or the letter next to an emoji is preserved.
-        egui::Event::Ime(egui::ImeEvent::DeleteSurroundingBytes { before_bytes, after_bytes }) => {
-            apply_delete_surrounding_bytes(app, state, target, before_bytes, after_bytes)
-        }
-        egui::Event::Ime(egui::ImeEvent::DeleteSurrounding { before_chars, after_chars }) => {
-            apply_delete_surrounding_chars(app, state, target, before_chars, after_chars)
-        }
-        // ordinary typing and paste are application-origin, even in the same pass as an IME event
-        egui::Event::Text(s) | egui::Event::Paste(s) => apply_text_input(state, &s),
+        Edit::DeleteSurroundingBytes { before_bytes, after_bytes } => apply_delete_surrounding_bytes(app, state, target, before_bytes, after_bytes),
+        Edit::DeleteSurrounding { before_chars, after_chars } => apply_delete_surrounding_chars(app, state, target, before_chars, after_chars),
         // an input method (Chinese, Japanese, Korean) hands over its finished text as a commit (#1083)
-        egui::Event::Ime(egui::ImeEvent::Commit(s)) => apply_ime_commit(app, state, target, &s),
-        egui::Event::Copy | egui::Event::Cut => apply_copy_cut(ui, state, is_cut),
-        egui::Event::Key { key, pressed: true, modifiers, .. } => apply_key_event(app, ui, state, layout, key, modifiers),
-        // A pointer press is handled later in this pass (caret placement, another layer, or
-        // ending the edit). Events after it in the same raw batch belong to the new target and
-        // must not be applied to the old one.
-        egui::Event::PointerButton { pressed: true, .. } => {
-            state.custom_mutations = false;
-            app.suspend_ime_input(ui.ctx());
-            EventFlow::Applied
-        }
-        _ => EventFlow::Applied,
+        Edit::Insert(text) if from_ime => apply_ime_commit(app, state, target, &text),
+        // ordinary typing, paste and marked text the composer kept as typed are application-origin
+        Edit::Insert(text) | Edit::Paste(text) => apply_text_input(state, &text),
+        Edit::Copy => apply_copy_cut(ui, state, false),
+        Edit::Cut => apply_copy_cut(ui, state, true),
+        Edit::Key { key, modifiers, .. } => apply_key_event(app, ui, state, layout, key, modifiers),
+        Edit::LineBreak { modifiers } => apply_key_event(app, ui, state, layout, egui::Key::Enter, modifiers),
     }
 }
 
@@ -2086,17 +2191,62 @@ fn text_edit(
     // before any slice/replace_range/insert_str, so hostile offsets can never panic the editor.
     clamp_edit_offsets(&state.text, &mut state.ed);
     let l = text_layout(tp);
-    let events = ui.input(|i| i.events.clone());
+    let (events, time) = ui.input(|i| (i.events.clone(), i.time));
     let sequence = app.session.state.active_sequence.map_or(0, |sequence| sequence.0);
     let composition_target = graphics_ime_target(sequence, state.ed.clip, state.ed.layer, v.spec.uid, app.ime_replacement_epoch);
+    let viewport = ui.ctx().viewport_id();
+    // A command, a control request or a caret move ended the composition: the composer drops
+    // its copy of the marked text, and a late commit of it.
+    if app.ime_composer.is_composing()
+        && !(app.ime_composition == Some(crate::ImeComposition::Active(composition_target)) && app.ime_composition_viewport == Some(viewport))
+    {
+        app.ime_composer.discard(ui.ctx());
+    }
+    // Reset completions and the fence's admission run per raw event. A pointer press is
+    // handled later in this pass (caret placement, another layer, or ending the edit): the
+    // composer sees it, so a composition keeps its marked text, and the events after it
+    // belong to the new target.
+    let mut admitted = Vec::new();
+    let mut pressed = false;
     for ev in events {
-        let Some((from_ime, terminal)) = begin_text_event(app, ui, &state, composition_target, &ev) else {
+        if begin_text_event(app, ui, &state, composition_target, &ev).is_none() {
             continue;
-        };
-        if apply_text_event(app, ui, &mut state, composition_target, &l, ev) == EventFlow::Skip {
+        }
+        pressed = matches!(ev, egui::Event::PointerButton { pressed: true, .. });
+        admitted.push(ev);
+        if pressed {
+            break;
+        }
+    }
+    let mut commits: Vec<String> = admitted
+        .iter()
+        .filter_map(|ev| match ev {
+            egui::Event::Ime(egui::ImeEvent::Commit(text)) if !text.is_empty() => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    let (steps, interrupted) = compose(&mut app.ime_composer, &admitted, time);
+    for step in steps {
+        if !state.custom_mutations {
+            break;
+        }
+        let (from_ime, terminal) = step_origin(&step, &mut commits);
+        app.sync_live_ime_destination(ui.ctx(), local_reset_destination(app, &state.ed, &state.text, composition_target));
+        if from_ime && app.ime_reset.blocked(viewport) {
+            continue;
+        }
+        if apply_text_step(app, ui, &mut state, composition_target, &l, step, from_ime) == EventFlow::Skip {
             continue;
         }
         finish_text_event(app, ui, &state, composition_target, from_ime, terminal);
+    }
+    if pressed {
+        state.custom_mutations = false;
+        app.suspend_ime_input(ui.ctx());
+    } else if interrupted && matches!(app.ime_composition, Some(crate::ImeComposition::Active(_) | crate::ImeComposition::TerminalPending(_))) {
+        // The composer kept the marked text as typed (a bare line break confirmed it): the
+        // platform input method drops its copy.
+        app.invalidate_ime_composition();
     }
     if state.changed && state.text != tp.text {
         let action_index = actions.len();

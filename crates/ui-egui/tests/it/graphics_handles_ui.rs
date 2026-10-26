@@ -392,6 +392,32 @@ fn text_committed_by_an_input_method_is_typed_on_the_monitor() {
     assert_eq!(list["layers"][0]["text"], "A你好");
 }
 
+/// The labels of the drawn marked text and of its active clause, if drawn.
+fn drawn_preedit(d: &mut Driver) -> (Option<String>, Option<String>) {
+    let elements = d.ok("ui.elements", json!({"prefix": "program.textEdit.preedit"}));
+    let label = |id: &str| elements.as_array()?.iter().find(|e| e["id"] == json!(id))?["label"].as_str().map(str::to_string);
+    (label("program.textEdit.preedit"), label("program.textEdit.preedit.clause"))
+}
+
+/// The marked text is drawn on the video with the clause being converted until the commit, which
+/// types the converted text instead.
+#[test]
+fn ime_preedit_and_its_active_clause_are_drawn_until_the_commit() {
+    let mut d = Driver::new();
+    let clip = d.start_point_text();
+    d.ok("ui.type", json!({"text": "A"}));
+    d.frames(2);
+    d.harness.input_mut().events.push(egui::Event::Ime(egui::ImeEvent::Preedit { text: "にほんご".into(), active_range_chars: Some(2..4) }));
+    d.frames(3);
+    assert_eq!(drawn_preedit(&mut d), (Some("にほんご".into()), Some("んご".into())));
+    assert_eq!(layer_texts(&mut d, clip), vec!["A".to_string()], "the marked text is not in the layer's text");
+    assert_eq!(drawn_preedit(&mut d).0.as_deref(), Some("にほんご"), "it stays drawn while composing");
+    d.harness.input_mut().events.extend([ime_preedit(""), ime_commit("日本語")]);
+    d.frames(2);
+    assert_eq!(drawn_preedit(&mut d), (None, None));
+    assert_eq!(layer_texts(&mut d, clip), vec!["A日本語".to_string()]);
+}
+
 /// The Program monitor's custom IME producer reports committed logical text, a reversed UTF-8
 /// selection, ignores preedit-only updates, and labels an accepted commit `InputMethod` while
 /// ordinary typing remains `Other`.
@@ -949,6 +975,8 @@ fn ime_pointer_caret_move_rejects_next_batch_old_composition() {
                 d.frames(1);
             }
             let before = d.ime().expect("a live graphics owner");
+            // A click while composing keeps the marked text as typed.
+            let typed = if terminal_pending { "alpha" } else { "alphaに" };
             d.harness.input_mut().events.extend([
                 egui::Event::PointerMoved(pos),
                 egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
@@ -978,13 +1006,13 @@ fn ime_pointer_caret_move_rejects_next_batch_old_composition() {
             };
             d.harness.input_mut().events.extend([delete, ime_commit("stale")]);
             d.frames(1);
-            assert_eq!(layer_texts(&mut d, clip), vec!["alpha".to_string()], "old composition cannot edit the clicked caret");
+            assert_eq!(layer_texts(&mut d, clip), vec![typed.to_string()], "old composition cannot edit the clicked caret");
             assert_eq!(d.harness.state().session.history.undo.len(), undo, "rejection creates no Undo transaction");
             // Rejected terminals do not release the guard. The actual reset fence does.
             let fence = d.reset_completed();
             d.harness.input_mut().events.extend([fence, ime_preedit("fresh"), ime_commit("X")]);
             d.frames(1);
-            assert_eq!(layer_texts(&mut d, clip), vec![format!("{}X{}", &"alpha"[..caret], &"alpha"[caret..])]);
+            assert_eq!(layer_texts(&mut d, clip), vec![format!("{}X{}", &typed[..caret], &typed[caret..])]);
         }
     }
 }
@@ -1007,7 +1035,7 @@ fn ime_same_owner_selection_move_rejects_only_a_known_composition() {
             if control_move {
                 d.ok("ui.set", json!({"gfxEdit": {"clip": clip, "layer": 0, "caret": 0, "anchor": 0}}));
             } else {
-                d.harness.input_mut().events.push(key_press(egui::Key::Home));
+                d.harness.input_mut().events.extend([ime_preedit(""), key_press(egui::Key::Home)]);
                 d.frames(1);
             }
             assert_eq!(d.harness.state().ui.gfx_edit.as_ref().map(|e| (e.caret, e.anchor)), Some((0, 0)));
@@ -1047,7 +1075,9 @@ fn ime_raw_select_all_rejects_old_terminal_input_and_preserves_direct_and_fresh_
             assert_eq!(d.harness.ctx.memory(|m| m.focused()), Some(egui::Id::unique("gfx-text-edit")));
             assert!(d.harness.ctx.egui_wants_keyboard_input(), "raw Select All must reach the focused-widget path");
             let command = egui::Modifiers { ctrl: !cfg!(target_os = "macos"), mac_cmd: cfg!(target_os = "macos"), command: true, ..egui::Modifiers::NONE };
+            // Keys are the input method's while it composes: its marked text empties first.
             d.harness.input_mut().events.extend([
+                ime_preedit(""),
                 egui::Event::ModifiersChanged(command),
                 egui::Event::Key { key: egui::Key::A, physical_key: Some(egui::Key::A), pressed: true, repeat: false, modifiers: command },
             ]);
@@ -1160,7 +1190,7 @@ fn ime_reset_local_caret_changes_supersede_a_completed_fence_before_the_next_eve
         d.frames(2);
         d.harness.input_mut().events.push(ime_preedit("に"));
         d.frames(1);
-        d.harness.input_mut().events.push(key_press(egui::Key::Home));
+        d.harness.input_mut().events.extend([ime_preedit(""), key_press(egui::Key::Home)]);
         d.frames(1);
         let first = d.reset_completed();
         let first_id = *d.reset_requests.last().unwrap();
@@ -1203,7 +1233,7 @@ fn ime_reset_hidden_logic_or_missing_geometry_rearms_the_same_model_caret_once()
         d.frames(2);
         d.harness.input_mut().events.push(ime_preedit("に"));
         d.frames(1);
-        d.harness.input_mut().events.push(key_press(egui::Key::Home));
+        d.harness.input_mut().events.extend([ime_preedit(""), key_press(egui::Key::Home)]);
         d.frames(1);
         let first = *d.reset_requests.last().unwrap();
         let request_count = d.reset_requests.len();
@@ -1288,7 +1318,7 @@ fn ime_reset_discarded_request_then_no_descriptor_rearms_on_return() {
             }
         }),
     );
-    d.harness.input_mut().events.push(key_press(egui::Key::Home));
+    d.harness.input_mut().events.extend([ime_preedit(""), key_press(egui::Key::Home)]);
     d.frames(1);
     assert!(d.harness.output().platform_output.num_completed_passes >= 2);
     assert!(d.ime().is_none(), "the final discarded rerun published no custom descriptor");
@@ -1350,7 +1380,7 @@ fn ime_reset_discarded_pass_keeps_the_same_custom_request_and_admits_a_fresh_suf
             }
         }),
     );
-    d.harness.input_mut().events.push(key_press(egui::Key::Home));
+    d.harness.input_mut().events.extend([ime_preedit(""), key_press(egui::Key::Home)]);
     d.frames(1);
     assert!(d.harness.output().platform_output.num_completed_passes >= 2);
     let ime = d.ime().expect("the final custom descriptor was published");
@@ -1390,7 +1420,7 @@ fn ime_reset_native_picker_and_in_app_modal_do_not_allocate_a_new_request() {
     d.frames(2);
     d.harness.input_mut().events.push(ime_preedit("に"));
     d.frames(1);
-    d.harness.input_mut().events.push(key_press(egui::Key::Home));
+    d.harness.input_mut().events.extend([ime_preedit(""), key_press(egui::Key::Home)]);
     d.frames(1);
     let first = *d.reset_requests.last().expect("the interruption published a fence");
 
@@ -1443,9 +1473,11 @@ fn ime_reset_pointer_and_escape_suffix_controls_cannot_edit_the_abandoned_target
         d.frames(2);
         d.harness.input_mut().events.push(ime_preedit("に"));
         d.frames(1);
-        d.harness.input_mut().events.push(key_press(egui::Key::Home));
+        d.harness.input_mut().events.extend([ime_preedit(""), key_press(egui::Key::Home)]);
         d.frames(1);
         let old = *d.reset_requests.last().unwrap();
+        // An Escape right after a composition ends is the input method's; this one is the user's.
+        d.frames(4);
         let boundary = if escape {
             key_press(egui::Key::Escape)
         } else {
@@ -1521,7 +1553,7 @@ fn ime_reset_stock_text_edit_keeps_its_output_and_custom_return_gets_a_new_fence
     let owner = d.ime().unwrap().owner;
     d.harness.input_mut().events.push(ime_preedit("に"));
     d.frames(1);
-    d.harness.input_mut().events.push(key_press(egui::Key::Home));
+    d.harness.input_mut().events.extend([ime_preedit(""), key_press(egui::Key::Home)]);
     d.frames(1);
     let first = *d.reset_requests.last().unwrap();
     let edit = d.harness.state().ui.gfx_edit.clone();

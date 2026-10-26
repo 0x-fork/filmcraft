@@ -182,17 +182,17 @@ impl Language {
     fn catalog(self) -> Option<&'static Catalog> {
         match self {
             Self::En => None,
-            Self::Ja => Some(JAPANESE.get_or_init(|| Catalog::parse(include_str!("ja.tsv")))),
-            Self::Es => Some(SPANISH.get_or_init(|| Catalog::parse(include_str!("es.tsv")))),
-            Self::PtBr => Some(PORTUGUESE.get_or_init(|| Catalog::parse(include_str!("pt-br.tsv")))),
-            Self::Uk => Some(UKRAINIAN.get_or_init(|| Catalog::parse(include_str!("uk.tsv")))),
-            Self::ZhCn => Some(CHINESE.get_or_init(|| Catalog::parse(include_str!("zh-cn.tsv")))),
-            Self::De => Some(GERMAN.get_or_init(|| Catalog::parse(include_str!("de.tsv")))),
-            Self::Ru => Some(RUSSIAN.get_or_init(|| Catalog::parse(include_str!("ru.tsv")))),
-            Self::Fr => Some(FRENCH.get_or_init(|| Catalog::parse(include_str!("fr.tsv")))),
-            Self::Id => Some(INDONESIAN.get_or_init(|| Catalog::parse(include_str!("id.tsv")))),
-            Self::It => Some(ITALIAN.get_or_init(|| Catalog::parse(include_str!("it.tsv")))),
-            Self::Ko => Some(KOREAN.get_or_init(|| Catalog::parse(include_str!("ko.tsv")))),
+            Self::Ja => Some(JAPANESE.get_or_init(|| Catalog::parse(include_str!("i18n/ja.tsv")))),
+            Self::Es => Some(SPANISH.get_or_init(|| Catalog::parse(include_str!("i18n/es.tsv")))),
+            Self::PtBr => Some(PORTUGUESE.get_or_init(|| Catalog::parse(include_str!("i18n/pt-br.tsv")))),
+            Self::Uk => Some(UKRAINIAN.get_or_init(|| Catalog::parse(include_str!("i18n/uk.tsv")))),
+            Self::ZhCn => Some(CHINESE.get_or_init(|| Catalog::parse(include_str!("i18n/zh-cn.tsv")))),
+            Self::De => Some(GERMAN.get_or_init(|| Catalog::parse(include_str!("i18n/de.tsv")))),
+            Self::Ru => Some(RUSSIAN.get_or_init(|| Catalog::parse(include_str!("i18n/ru.tsv")))),
+            Self::Fr => Some(FRENCH.get_or_init(|| Catalog::parse(include_str!("i18n/fr.tsv")))),
+            Self::Id => Some(INDONESIAN.get_or_init(|| Catalog::parse(include_str!("i18n/id.tsv")))),
+            Self::It => Some(ITALIAN.get_or_init(|| Catalog::parse(include_str!("i18n/it.tsv")))),
+            Self::Ko => Some(KOREAN.get_or_init(|| Catalog::parse(include_str!("i18n/ko.tsv")))),
         }
     }
 
@@ -363,17 +363,17 @@ mod tests {
     fn catalog_text(l: Language) -> Option<&'static str> {
         match l {
             Language::En => None,
-            Language::Ja => Some(include_str!("ja.tsv")),
-            Language::Es => Some(include_str!("es.tsv")),
-            Language::PtBr => Some(include_str!("pt-br.tsv")),
-            Language::Uk => Some(include_str!("uk.tsv")),
-            Language::ZhCn => Some(include_str!("zh-cn.tsv")),
-            Language::De => Some(include_str!("de.tsv")),
-            Language::Ru => Some(include_str!("ru.tsv")),
-            Language::Fr => Some(include_str!("fr.tsv")),
-            Language::Id => Some(include_str!("id.tsv")),
-            Language::It => Some(include_str!("it.tsv")),
-            Language::Ko => Some(include_str!("ko.tsv")),
+            Language::Ja => Some(include_str!("i18n/ja.tsv")),
+            Language::Es => Some(include_str!("i18n/es.tsv")),
+            Language::PtBr => Some(include_str!("i18n/pt-br.tsv")),
+            Language::Uk => Some(include_str!("i18n/uk.tsv")),
+            Language::ZhCn => Some(include_str!("i18n/zh-cn.tsv")),
+            Language::De => Some(include_str!("i18n/de.tsv")),
+            Language::Ru => Some(include_str!("i18n/ru.tsv")),
+            Language::Fr => Some(include_str!("i18n/fr.tsv")),
+            Language::Id => Some(include_str!("i18n/id.tsv")),
+            Language::It => Some(include_str!("i18n/it.tsv")),
+            Language::Ko => Some(include_str!("i18n/ko.tsv")),
         }
     }
 
@@ -432,7 +432,7 @@ mod tests {
     #[test]
     fn the_current_language_is_per_thread() {
         // any entry the Spanish catalog has
-        let (entries, _) = catalog::parse_entries(include_str!("es.tsv"));
+        let (entries, _) = catalog::parse_entries(include_str!("i18n/es.tsv"));
         let Some((_, en, es)) = entries.into_iter().find(|(ctx, en, es)| ctx.is_empty() && en != es) else { return };
         set_current(Language::Es);
         assert_eq!((current(), t(&en)), (Language::Es, es.as_str()));
@@ -1025,7 +1025,7 @@ mod tests {
 
     #[test]
     fn ukrainian_renders_with_bundled_fonts() {
-        let (entries, _) = catalog::parse_entries(include_str!("uk.tsv"));
+        let (entries, _) = catalog::parse_entries(include_str!("i18n/uk.tsv"));
         // Include the entire alphabet, even letters not yet used by a translated menu label.
         let alphabet = "АБВГҐДЕЄЖЗИІЇЙКЛМНОПРСТУФХЦЧШЩЬЮЯабвгґдеєжзиіїйклмнопрстуфхцчшщьюя";
         assert_bundled_fonts_cover(alphabet.chars().chain(Language::Uk.name().chars()).chain(entries.iter().flat_map(|(_, _, uk)| uk.chars())));
@@ -1033,7 +1033,7 @@ mod tests {
 
     #[test]
     fn portuguese_renders_with_bundled_fonts() {
-        let (entries, _) = catalog::parse_entries(include_str!("pt-br.tsv"));
+        let (entries, _) = catalog::parse_entries(include_str!("i18n/pt-br.tsv"));
         // every Portuguese letter, even ones no entry uses yet, and every letter the entries use
         let alphabet = "ÁÂÃÀÇÉÊÍÓÔÕÚÜáâãàçéêíóôõúü";
         let letters = entries.iter().flat_map(|(_, _, pt)| pt.chars()).filter(|ch| ch.is_alphabetic());
@@ -1042,7 +1042,7 @@ mod tests {
 
     #[test]
     fn french_renders_with_bundled_fonts() {
-        let (entries, _) = catalog::parse_entries(include_str!("fr.tsv"));
+        let (entries, _) = catalog::parse_entries(include_str!("i18n/fr.tsv"));
         // every French letter and quotation mark, even ones no entry uses yet, and every letter the
         // entries use (symbols such as ✔ come from the English sources)
         let alphabet = "ÀÂÆÇÉÈÊËÎÏÔŒÙÛÜŸàâæçéèêëîïôœùûüÿ«»’";
@@ -1052,7 +1052,7 @@ mod tests {
 
     #[test]
     fn german_renders_with_bundled_fonts() {
-        let (entries, _) = catalog::parse_entries(include_str!("de.tsv"));
+        let (entries, _) = catalog::parse_entries(include_str!("i18n/de.tsv"));
         // every German letter and quotation mark, even ones no entry uses yet, and every letter,
         // dash and ellipsis the entries use (symbols such as ✔ come from the English sources)
         let alphabet = "ÄÖÜäöüß„“‚‘";
@@ -1062,7 +1062,7 @@ mod tests {
 
     #[test]
     fn indonesian_renders_with_bundled_fonts() {
-        let (entries, _) = catalog::parse_entries(include_str!("id.tsv"));
+        let (entries, _) = catalog::parse_entries(include_str!("i18n/id.tsv"));
         // Indonesian is written in basic Latin letters; any other letter an entry uses, and its
         // curly quotes, dashes and ellipses, must still render (symbols such as ✔ come from the
         // English sources)
@@ -1072,7 +1072,7 @@ mod tests {
 
     #[test]
     fn italian_renders_with_bundled_fonts() {
-        let (entries, _) = catalog::parse_entries(include_str!("it.tsv"));
+        let (entries, _) = catalog::parse_entries(include_str!("i18n/it.tsv"));
         // every Italian accented letter, even ones no entry uses yet, and every letter, curly quote,
         // dash and ellipsis the entries use (symbols such as ✔ come from the English sources)
         let alphabet = "ÀÈÉÌÍÎÒÓÙÚàèéìíîòóùú";

@@ -419,6 +419,54 @@ fn ime_preedit_and_its_active_clause_are_drawn_until_the_commit() {
     assert_eq!(layer_texts(&mut d, clip), vec!["A日本語".to_string()]);
 }
 
+/// #2445: Korean commits a syllable only when the next one starts. The syllable being composed
+/// shows at the caret, and the one still being composed when the edit ends goes into the text,
+/// once.
+#[test]
+fn korean_being_composed_shows_and_is_kept_when_the_edit_ends() {
+    let mut d = Driver::new();
+    let clip = d.start_point_text();
+    d.ok("ui.type", json!({"text": "A"}));
+    d.frames(2);
+    // 한 composed from ㅎ, 하, 한, then 국 started: 한 is committed, 구 shows
+    d.harness.input_mut().events.extend([ime_preedit("ㅎ"), ime_preedit("하"), ime_preedit("한")]);
+    d.frames(3);
+    assert_eq!(drawn_preedit(&mut d).0.as_deref(), Some("한"), "the syllable being composed shows");
+    d.harness.input_mut().events.extend([ime_commit("한"), ime_preedit("구")]);
+    d.frames(3);
+    assert_eq!(layer_texts(&mut d, clip), vec!["A한".to_string()]);
+    assert_eq!(drawn_preedit(&mut d).0.as_deref(), Some("구"));
+    // moving to the Timeline ends the edit: the syllable still being composed is kept
+    d.ok("ui.panel.show", json!({"panel": "Timeline"}));
+    d.frames(3);
+    assert!(d.harness.state().ui.gfx_edit.is_none());
+    assert_eq!(layer_texts(&mut d, clip), vec!["A한구".to_string()]);
+    // the input method's own late commit of it is not typed a second time
+    d.ok("ui.set", json!({"gfxEdit": {"clip": clip, "layer": 0, "caret": 7, "anchor": 7}}));
+    d.frames(2);
+    d.harness.input_mut().events.push(ime_commit("구"));
+    d.frames(2);
+    assert_eq!(layer_texts(&mut d, clip), vec!["A한구".to_string()]);
+}
+
+/// A commit, the next syllable and the release of a click that ends the edit, in one pass, keep
+/// both syllables: the commit's text is written before the edit's end types the marked text.
+#[test]
+fn a_commit_and_a_preedit_with_the_click_that_ends_the_edit_keep_both() {
+    let mut d = Driver::new();
+    let clip = d.start_point_text();
+    d.ok("ui.type", json!({"text": "A"}));
+    d.frames(2);
+    let pic = d.rect("program.picture");
+    let at = egui::pos2((pic[0] + pic[2] * 0.7) as f32, (pic[1] + pic[3] * 0.8) as f32);
+    let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    d.harness.input_mut().events.extend([egui::Event::PointerMoved(at), button(true)]);
+    d.frames(1);
+    d.harness.input_mut().events.extend([ime_commit("한"), ime_preedit("구"), button(false)]);
+    d.frames(3);
+    assert_eq!(layer_texts(&mut d, clip).first().map(String::as_str), Some("A한구"));
+}
+
 /// The Program monitor's IME context keeps its owner and generation through a reversed UTF-8
 /// selection, a preedit, a commit that replaces the selection, an empty commit and typing.
 #[test]

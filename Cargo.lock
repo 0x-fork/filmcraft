@@ -1010,12 +1010,12 @@ dependencies = [
 [[package]]
 name = "craft-docpath"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=a0916808f7d78bed8c7b90cdf937176015454a7f#a0916808f7d78bed8c7b90cdf937176015454a7f"
+source = "git+https://github.com/storytold/craft-libs?rev=37c907d23e608aaa098d7a48fa483670e90c6f33#37c907d23e608aaa098d7a48fa483670e90c6f33"
 
 [[package]]
 name = "craft-media"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=a0916808f7d78bed8c7b90cdf937176015454a7f#a0916808f7d78bed8c7b90cdf937176015454a7f"
+source = "git+https://github.com/storytold/craft-libs?rev=37c907d23e608aaa098d7a48fa483670e90c6f33#37c907d23e608aaa098d7a48fa483670e90c6f33"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -1023,7 +1023,7 @@ dependencies = [
 [[package]]
 name = "craft-ui"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=a0916808f7d78bed8c7b90cdf937176015454a7f#a0916808f7d78bed8c7b90cdf937176015454a7f"
+source = "git+https://github.com/storytold/craft-libs?rev=37c907d23e608aaa098d7a48fa483670e90c6f33#37c907d23e608aaa098d7a48fa483670e90c6f33"
 dependencies = [
  "egui",
  "log",

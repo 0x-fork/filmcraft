@@ -91,7 +91,7 @@ check the bundle and the DMG on your own Mac (`packaging/macos/package.sh`).
 nor the portable zip needs the Visual C++ redistributable.
 
 - `filmcraft.wxs` (WiX) is a dual-scope package: per-user by default into
-  `%LOCALAPPDATA%\Programs\ArtCraft\FilmCraft`, per-machine into `Program Files\ArtCraft\FilmCraft`
+  `%LOCALAPPDATA%\Programs\ArtCraft\FilmCraft`, per-machine into `Program Files\ArtCraft\FilmCraft` (`Program Files (x86)` for the 32-bit build)
   (see `packaging/windows/INSTALLATION.md`). It has a Start Menu shortcut and
   an App Paths entry (Win+R `filmcraft`). Same-version upgrades are allowed, so release candidates
   replace each other.

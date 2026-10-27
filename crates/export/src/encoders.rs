@@ -435,7 +435,7 @@ impl VideoEncoder for H264Encoder {
         let (ready, signal) = (self.ready.clone(), self.signal);
         Some(Arc::new(move |f: &EncoderFrame| {
             let (mut y, mut u, mut v) = (Vec::new(), Vec::new(), Vec::new());
-            h264_input(f, signal, &mut y, &mut u, &mut v);
+            timed(Stage::Convert, || h264_input(f, signal, &mut y, &mut u, &mut v));
             ready.lock().unwrap_or_else(PoisonError::into_inner).insert(f.index, (y, u, v));
         }))
     }

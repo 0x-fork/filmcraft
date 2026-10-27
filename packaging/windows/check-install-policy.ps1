@@ -143,7 +143,8 @@ try {
       $ui['CraftPreferMachineScope'] -lt $ui['CraftScopeDlg'] -and
       $ui['CraftScopeDlg'] -lt $ui['FindRelatedProducts'] -and
       $ui['FindRelatedProducts'] -lt $ui['LaunchConditions'] -and
-      $ui['CraftScopeDlg'] -lt $ui['CraftRestoreUserFolder'] -and $ui['CraftRestoreUserFolder'] -lt $ui['CostInitialize'])) {
+      $ui['CraftScopeDlg'] -lt $ui['CraftRestoreUserFolder'] -and $ui['CraftRestoreUserFolder'] -lt $ui['CostInitialize'] -and
+      $ui['CraftScopeDlg'] -lt $ui['CraftRestoreMachineFolder'] -and $ui['CraftRestoreMachineFolder'] -lt $ui['CostInitialize'])) {
     throw 'Scope must be chosen after AppSearch and before FindRelatedProducts, launch checks and costing.'
   }
   # Windows Installer resolves Program Files for the context it started in, before the wizard's scope choice.
@@ -174,6 +175,28 @@ try {
     $wanted = if ($scope -eq '1') { $machineFolder } else { (Join-Path $env:LOCALAPPDATA "Programs\ArtCraft\$($policy.name)") + '\' }
     if ($folder -ine $wanted) { throw "Wizard default folder for ALLUSERS='$scope' is '$folder', expected '$wanted'." }
   }
+  # Replay the wizard's compiled folder actions in sequence order, as the full UI runs them. A remembered
+  # folder must win over the new-install default, and a folder the user typed must survive both.
+  $uiFolderActions = @(Read-Rows $database 'SELECT `Action`, `Sequence`, `Condition` FROM `InstallUISequence`' 3 |
+    Where-Object { $_[0] -match '^Craft(Restore|Default)' } | Sort-Object { [int]$_[1] })
+  $userDefault = (Join-Path $env:LOCALAPPDATA "Programs\ArtCraft\$($policy.name)") + '\'
+  foreach ($case in @(
+      @('1', 'D:\Remembered user app', 'E:\Remembered machine app', '', 'E:\Remembered machine app'),
+      @('', 'D:\Remembered user app', 'E:\Remembered machine app', '', 'D:\Remembered user app'),
+      @('1', '', '', '', $machineFolder),
+      @('', '', '', '', $userDefault),
+      @('1', 'D:\Remembered user app', 'E:\Remembered machine app', 'F:\Chosen exact app', 'F:\Chosen exact app'))) {
+    Set-SessionProperty $session 'Installed' ''
+    Set-SessionProperty $session 'ALLUSERS' $case[0]
+    Set-SessionProperty $session 'CRAFT_USER_DIR' $case[1]
+    Set-SessionProperty $session 'CRAFT_MACHINE_DIR' $case[2]
+    Set-SessionProperty $session 'INSTALLFOLDER' $case[3]
+    foreach ($row in $uiFolderActions) {
+      if ($session.EvaluateCondition($row[2]) -eq 1 -and $session.DoAction($row[0]) -ne 1) { throw "$($row[0]) failed." }
+    }
+    $folder = Get-SessionProperty $session 'INSTALLFOLDER'
+    if ($folder -ine $case[4]) { throw "Full-UI folder for ALLUSERS='$($case[0])' is '$folder', expected '$($case[4])'." }
+  }
   $execute = @{}
   foreach ($row in (Read-Rows $database 'SELECT `Action`, `Sequence` FROM `InstallExecuteSequence`' 2)) { $execute[$row[0]] = [int]$row[1] }
   foreach ($action in @('CraftRestoreUserFolder','CraftRestoreMachineFolder')) {
@@ -184,6 +207,57 @@ try {
   foreach ($resolver in @('CraftUFromLegacyExe','CraftMFromLegacyExe')) {
     if (-not ($execute['AppSearch'] -lt $execute[$resolver] -and $execute[$resolver] -lt $execute['LaunchConditions'])) {
       throw 'Both legacy folder resolvers must run after AppSearch and before the launch checks.'
+    }
+  }
+  # AppSearch itself never runs in this safe session, so check the compiled searches and then run the
+  # property actions that turn the search results into the remembered folder, once per scope.
+  $appSearch = @{}
+  foreach ($row in (Read-Rows $database 'SELECT `Property`, `Signature_` FROM `AppSearch`' 2)) { $appSearch[$row[0]] = $row[1] }
+  $locators = @{}
+  foreach ($row in (Read-Rows $database 'SELECT `Signature_`, `Root`, `Key`, `Name`, `Type` FROM `RegLocator`' 5)) { $locators[$row[0]] = $row }
+  $appPaths = '^Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\[^\\]+\.exe$'
+  # Suffix, how to match the key, key, value name, locator type (2 = raw value, 1 = file; the 64-bit flag is masked off).
+  $searchContract = @(
+    @('DIR',       'exact', "Software\$($policy.name)", 'InstallDir',    '2'),
+    @('FOLDER',    'exact', "Software\$($policy.name)", 'InstallFolder', '2'),
+    @('PATH',      'regex', $appPaths,                  'Path',          '2'),
+    @('EXEFOLDER', 'regex', $appPaths,                  '',              '1'),
+    @('EXE',       'regex', $appPaths,                  '',              '1'))
+  $resolverCases = @(
+    @{ name = 'every record, DIR wins';        dir = 'D:\Dir\'; folder = 'D:\Folder\'; path = 'D:\Path\'; exeFolder = 'D:\Exe\'; exe = 'D:\Exe\app.exe'; existing = '';            expected = 'D:\Dir\' },
+    @{ name = 'FOLDER wins without DIR';       dir = '';        folder = 'D:\Folder\'; path = 'D:\Path\'; exeFolder = 'D:\Exe\'; exe = 'D:\Exe\app.exe'; existing = '';            expected = 'D:\Folder\' },
+    @{ name = 'PATH wins without DIR, FOLDER'; dir = '';        folder = '';           path = 'D:\Path\'; exeFolder = 'D:\Exe\'; exe = 'D:\Exe\app.exe'; existing = '';            expected = 'D:\Path\' },
+    @{ name = 'legacy exe folder is last';     dir = '';        folder = '';           path = '';         exeFolder = 'D:\Exe\'; exe = 'D:\Exe\app.exe'; existing = '';            expected = 'D:\Exe\' },
+    @{ name = 'legacy folder needs the exe';   dir = '';        folder = '';           path = '';         exeFolder = 'D:\Exe\'; exe = '';               existing = '';            expected = '' },
+    @{ name = 'a preset folder is kept';       dir = 'D:\Dir\'; folder = 'D:\Folder\'; path = 'D:\Path\'; exeFolder = 'D:\Exe\'; exe = 'D:\Exe\app.exe'; existing = 'P:\Preset\'; expected = 'P:\Preset\' })
+  foreach ($scopeSpec in @(@('U', '1', 'CRAFT_USER_DIR'), @('M', '2', 'CRAFT_MACHINE_DIR'))) {
+    $letter = $scopeSpec[0]; $target = $scopeSpec[2]
+    foreach ($item in $searchContract) {
+      $property = "CRAFT_${letter}_$($item[0])"
+      $locator = if ($appSearch.ContainsKey($property)) { $locators[$appSearch[$property]] } else { $null }
+      $keyOk = $null -ne $locator -and $(if ($item[1] -eq 'exact') { $locator[2] -eq $item[2] } else { $locator[2] -match $item[2] })
+      if (-not $keyOk -or $locator[1] -ne $scopeSpec[1] -or $locator[3] -ne $item[3] -or ([int]$locator[4] -band 3) -ne [int]$item[4]) {
+        throw "Compiled search for $property is missing or points at the wrong registry location."
+      }
+    }
+    $chain = @(Read-Rows $database 'SELECT `Action`, `Sequence`, `Condition` FROM `InstallExecuteSequence`' 3 |
+      Where-Object { $_[0] -match "^Craft${letter}From" } | Sort-Object { [int]$_[1] })
+    $order = @($chain | ForEach-Object { $_[0] }) -join ','
+    if ($order -ne "Craft${letter}FromDIR,Craft${letter}FromFOLDER,Craft${letter}FromPATH,Craft${letter}FromLegacyExe") {
+      throw "Remembered-folder resolvers for scope $letter run in the wrong order: $order"
+    }
+    foreach ($case in $resolverCases) {
+      Set-SessionProperty $session $target $case.existing
+      Set-SessionProperty $session "CRAFT_${letter}_DIR" $case.dir
+      Set-SessionProperty $session "CRAFT_${letter}_FOLDER" $case.folder
+      Set-SessionProperty $session "CRAFT_${letter}_PATH" $case.path
+      Set-SessionProperty $session "CRAFT_${letter}_EXEFOLDER" $case.exeFolder
+      Set-SessionProperty $session "CRAFT_${letter}_EXE" $case.exe
+      foreach ($row in $chain) {
+        if ($session.EvaluateCondition($row[2]) -eq 1 -and $session.DoAction($row[0]) -ne 1) { throw "$($row[0]) failed." }
+      }
+      $got = Get-SessionProperty $session $target
+      if ($got -ne $case.expected) { throw "Resolver chain for scope $letter, case '$($case.name)': got '$got', expected '$($case.expected)'." }
     }
   }
   # Switching the first-page choice must reset BOTH properties, including a back-and-forth change.

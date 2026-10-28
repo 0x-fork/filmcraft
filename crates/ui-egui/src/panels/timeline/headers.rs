@@ -108,7 +108,6 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
         }
         // 2. track lock
         let small = |x: f32, y: f32| Rect::from_center_size(pos2(hrect.min.x + x, y), vec2(18.0, 18.0));
-        let upper_y = hrect.min.y + (16.0f32).min(hrect.height() / 2.0);
         let lock_r = small(49.0, hrect.center().y);
         let lresp = crate::widgets::icon_toggle(
             ui,
@@ -148,73 +147,7 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
             actions.push(("timeline.setTargeting".into(), json!({"track": r.track.0, "targeted": !targeted})));
         }
         // 4. upper line icons
-        let mut x = 102.0;
-        let sr = small(x, upper_y);
-        let sresp = crate::widgets::icon_toggle(
-            ui,
-            sr.intersect(visible),
-            Icon::SyncLock,
-            tr.sync_lock,
-            t,
-            egui::Id::unique(("syncLock", r.track.0)),
-            Some(t.text_dim),
-        );
-        app.auto.add(&format!("timeline.track.{label}.syncLock"), sr, "Toggle Sync Lock");
-        if sresp.clicked() {
-            actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "syncLock": !tr.sync_lock})));
-        }
-        x += 24.0;
-        if r.kind == TrackKind::Video {
-            let er = small(x, upper_y);
-            let eresp = crate::widgets::icon_toggle(
-                ui,
-                er.intersect(visible),
-                if tr.enabled { Icon::Eye } else { Icon::EyeOff },
-                true,
-                t,
-                egui::Id::unique(("enabled", r.track.0)),
-                Some(t.text_dim),
-            );
-            app.auto.add(&format!("timeline.track.{label}.enabled"), er, "Toggle Track Output");
-            if eresp.clicked() {
-                actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "enabled": !tr.enabled})));
-            }
-        } else {
-            let mr = Rect::from_center_size(pos2(hrect.min.x + x, upper_y), vec2(14.0, 14.0));
-            let mresp = crate::widgets::letter_toggle(
-                ui,
-                mr.intersect(visible),
-                "M",
-                tr.muted,
-                Color32::from_rgb(0x2d, 0x9d, 0x78),
-                t,
-                egui::Id::unique(("mute", r.track.0)),
-            );
-            app.auto.add(&format!("timeline.track.{label}.muted"), mr, "Mute Track");
-            if mresp.clicked() {
-                actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "muted": !tr.muted})));
-            }
-            let s2 = Rect::from_center_size(pos2(hrect.min.x + x + 20.0, upper_y), vec2(14.0, 14.0));
-            let so = crate::widgets::letter_toggle(
-                ui,
-                s2.intersect(visible),
-                "S",
-                tr.solo,
-                Color32::from_rgb(0xf0, 0xf0, 0x4f),
-                t,
-                egui::Id::unique(("solo", r.track.0)),
-            );
-            app.auto.add(&format!("timeline.track.{label}.solo"), s2, "Solo Track");
-            if so.clicked() {
-                actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "solo": !tr.solo})));
-            }
-            let vr = small(x + 42.0, upper_y);
-            if let Some(a) = crate::panels::voiceover::header_button(app, ui, r.track, vr, visible, &label, t) {
-                vo_action = Some(a);
-            }
-            let kr = small(x + 64.0, upper_y);
-            crate::panels::timeline_automation::header_button(app, ui, seq, r, kr, visible, &label, t);
-        }
+        header_line_buttons(app, ui, seq, r, tr, visible, hrect, &label, t, &mut actions, &mut vo_action);
         // 5. name on the lower line (or inline when short)
         if hrect.height() >= 40.0 {
             p.text(pos2(hrect.min.x + 94.0, hrect.min.y + 34.0), Align2::LEFT_CENTER, &tr.name, Tokens::ui(11.0), t.text_dim);
@@ -260,5 +193,85 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
     }
     if let Some(a) = vo_action {
         crate::panels::voiceover::run(app, &ui.ctx().clone(), a);
+    }
+}
+
+/// A track header's upper line: sync-lock, then output enable for a video track, or mute,
+/// solo, voiceover and automation for an audio track.
+#[allow(clippy::too_many_arguments)]
+fn header_line_buttons(
+    app: &mut FilmcraftApp,
+    ui: &mut egui::Ui,
+    seq: &Sequence,
+    r: &Row,
+    tr: &filmcraft_project::Track,
+    visible: Rect,
+    hrect: Rect,
+    label: &str,
+    t: &Tokens,
+    actions: &mut Vec<(String, Value)>,
+    vo_action: &mut Option<crate::panels::voiceover::Action>,
+) {
+    let upper_y = hrect.min.y + (16.0f32).min(hrect.height() / 2.0);
+    let small = |x: f32, y: f32| Rect::from_center_size(pos2(hrect.min.x + x, y), vec2(18.0, 18.0));
+    let mut x = 102.0;
+    let sr = small(x, upper_y);
+    let sresp =
+        crate::widgets::icon_toggle(ui, sr.intersect(visible), Icon::SyncLock, tr.sync_lock, t, egui::Id::unique(("syncLock", r.track.0)), Some(t.text_dim));
+    app.auto.add(&format!("timeline.track.{label}.syncLock"), sr, "Toggle Sync Lock");
+    if sresp.clicked() {
+        actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "syncLock": !tr.sync_lock})));
+    }
+    x += 24.0;
+    if r.kind == TrackKind::Video {
+        let er = small(x, upper_y);
+        let eresp = crate::widgets::icon_toggle(
+            ui,
+            er.intersect(visible),
+            if tr.enabled { Icon::Eye } else { Icon::EyeOff },
+            true,
+            t,
+            egui::Id::unique(("enabled", r.track.0)),
+            Some(t.text_dim),
+        );
+        app.auto.add(&format!("timeline.track.{label}.enabled"), er, "Toggle Track Output");
+        if eresp.clicked() {
+            actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "enabled": !tr.enabled})));
+        }
+    } else {
+        let mr = Rect::from_center_size(pos2(hrect.min.x + x, upper_y), vec2(14.0, 14.0));
+        let mresp = crate::widgets::letter_toggle(
+            ui,
+            mr.intersect(visible),
+            "M",
+            tr.muted,
+            Color32::from_rgb(0x2d, 0x9d, 0x78),
+            t,
+            egui::Id::unique(("mute", r.track.0)),
+        );
+        app.auto.add(&format!("timeline.track.{label}.muted"), mr, "Mute Track");
+        if mresp.clicked() {
+            actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "muted": !tr.muted})));
+        }
+        let s2 = Rect::from_center_size(pos2(hrect.min.x + x + 20.0, upper_y), vec2(14.0, 14.0));
+        let so = crate::widgets::letter_toggle(
+            ui,
+            s2.intersect(visible),
+            "S",
+            tr.solo,
+            Color32::from_rgb(0xf0, 0xf0, 0x4f),
+            t,
+            egui::Id::unique(("solo", r.track.0)),
+        );
+        app.auto.add(&format!("timeline.track.{label}.solo"), s2, "Solo Track");
+        if so.clicked() {
+            actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "solo": !tr.solo})));
+        }
+        let vr = small(x + 42.0, upper_y);
+        if let Some(a) = crate::panels::voiceover::header_button(app, ui, r.track, vr, visible, label, t) {
+            *vo_action = Some(a);
+        }
+        let kr = small(x + 64.0, upper_y);
+        crate::panels::timeline_automation::header_button(app, ui, seq, r, kr, visible, label, t);
     }
 }

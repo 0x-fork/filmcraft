@@ -166,34 +166,8 @@ fn handle_ui_set(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Outc
         app.ui.program.res =
             PlaybackRes::ALL.into_iter().find(|x| x.label().eq_ignore_ascii_case(r) || format!("{x:?}").eq_ignore_ascii_case(r)).unwrap_or(app.ui.program.res);
     }
-    if let Some(tl) = p.get("timeline") {
-        if let Some(v) = tl.get("pps").and_then(Value::as_f64) {
-            app.ui.timeline.target_pps = v;
-        }
-        if let Some(v) = tl.get("scroll").and_then(Value::as_f64) {
-            app.ui.timeline.target_scroll = v;
-        }
-        if tl.get("fit").and_then(Value::as_bool) == Some(true) {
-            app.ui.timeline.fit_pending = true;
-        }
-        if let Some(v) = tl.get("videoTrackHeight").and_then(Value::as_f64) {
-            app.ui.timeline.video_track_h = v as f32;
-        }
-        if let Some(v) = tl.get("audioTrackHeight").and_then(Value::as_f64) {
-            app.ui.timeline.audio_track_h = v as f32;
-        }
-        // Show Video Thumbnails: "off" or a mode ("head", "headAndTail", "continuous")
-        if let Some(m) = tl.get("thumbnails").and_then(Value::as_str) {
-            if m.eq_ignore_ascii_case("off") {
-                app.ui.timeline.show_thumbnails = false;
-            } else {
-                let Some(mode) = ThumbnailMode::from_name(m) else {
-                    return err(format!("unknown thumbnail mode `{m}` (off, head, headAndTail, continuous)"));
-                };
-                app.ui.timeline.show_thumbnails = true;
-                app.ui.timeline.thumbnail_mode = mode;
-            }
-        }
+    if let Err(e) = set_timeline(app, p) {
+        return err(e);
     }
     if let Some(q) = s("effectsSearch") {
         app.ui.effects_search = q.to_string();
@@ -210,19 +184,8 @@ fn handle_ui_set(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Outc
         app.ui.program.safe_margins = v;
     }
     // Monitor view state (serde fields of `MonitorView`), merged into the current state.
-    for k in ["program", "source"] {
-        let Some(patch) = p.get(k).and_then(Value::as_object) else { continue };
-        let mv = if k == "program" { &mut app.ui.program } else { &mut app.ui.source };
-        let mut cur = serde_json::to_value(&*mv).unwrap_or_default();
-        if let Some(o) = cur.as_object_mut() {
-            for (f, v) in patch {
-                o.insert(f.clone(), v.clone());
-            }
-        }
-        match serde_json::from_value(cur) {
-            Ok(m) => *mv = m,
-            Err(e) => return err(format!("`{k}`: {e}")),
-        }
+    if let Err(e) = set_monitor_views(app, p) {
+        return err(e);
     }
     // Export mode state (`panels::export_mode::ExportUi`), deep-merged; `"preset": name`
     // applies that preset's settings first
@@ -250,18 +213,8 @@ fn handle_ui_set(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Outc
         }
     }
     // Project panel / Media Browser view state (`panels::project`, `panels::media_browser`), merged
-    for (k, which) in [("projectPanel", 0), ("mediaBrowser", 1)] {
-        let Some(patch) = p.get(k) else { continue };
-        let mut cur = if which == 0 { serde_json::to_value(&app.ui.project_panel) } else { serde_json::to_value(&app.ui.media_browser) }.unwrap_or_default();
-        merge(&mut cur, patch);
-        let r = if which == 0 {
-            serde_json::from_value(cur).map(|v| app.ui.project_panel = v)
-        } else {
-            serde_json::from_value(cur).map(|v| app.ui.media_browser = v)
-        };
-        if let Err(e) = r {
-            return err(format!("`{k}`: {e}"));
-        }
+    if let Err(e) = set_panel_views(app, p) {
+        return err(e);
     }
     // Essential Graphics ▸ Browse and the template / font dialogs (`panels::graphics_templates`), merged
     if let Some(patch) = p.get("gfxTemplates") {
@@ -273,51 +226,10 @@ fn handle_ui_set(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Outc
         }
     }
     // the Type tool's text editing state: {"clip", "layer", "caret", "anchor"} (byte offsets) or null
-    if let Some(v) = p.get("gfxEdit") {
-        match serde_json::from_value::<Option<crate::state::GfxEdit>>(v.clone()) {
-            Ok(mut e) => {
-                // An explicit `ui.set.gfxEdit {clip, layer}` names the layer currently at
-                // that index. Resolve its identity from the document instead of inheriting
-                // a stale uid/fingerprint from a previous edit session: after a reorder,
-                // delete or undo the requested index may now hold a different layer.
-                if let Some(new) = e.as_mut() {
-                    match crate::panels::graphics::current_layer_identity(&app.session, new.clip, new.layer) {
-                        Some((uid, fingerprint)) => {
-                            new.uid = uid;
-                            new.fingerprint = fingerprint;
-                        }
-                        None => {
-                            new.uid = 0;
-                            new.fingerprint = 0;
-                        }
-                    }
-                }
-                let changed = match (&app.ui.gfx_edit, &e) {
-                    (None, None) => false,
-                    (Some(old), Some(new)) => {
-                        // A stable uid is the owner key. The compact fingerprint only
-                        // decides identity for a uid-less layer, and zero there means
-                        // "the requested index" rather than a different owner.
-                        old.clip != new.clip
-                            || old.layer != new.layer
-                            || old.uid != new.uid
-                            || (new.uid == 0 && old.fingerprint != 0 && old.fingerprint != new.fingerprint)
-                    }
-                    _ => true,
-                };
-                if changed {
-                    app.restart_ime_target();
-                } else if let (Some(old), Some(new)) = (&app.ui.gfx_edit, &e)
-                    && (old.caret, old.anchor) != (new.caret, new.anchor)
-                {
-                    // Caret is not part of the stable owner. Only a known composition
-                    // becomes stale; commit-only input without one remains eligible.
-                    app.invalidate_ime_composition();
-                }
-                app.ui.gfx_edit = e;
-            }
-            Err(e) => return err(format!("`gfxEdit`: {e}")),
-        }
+    if let Some(v) = p.get("gfxEdit")
+        && let Err(e) = set_gfx_edit(app, v)
+    {
+        return err(e);
     }
     // fields of the open Edit / Clip / File dialog (`panels::clip_dialogs`)
     if let Some(m) = p.get("clipDialog").and_then(Value::as_object) {
@@ -334,6 +246,131 @@ fn handle_ui_set(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Outc
         }
     }
     ok(Value::Null)
+}
+
+/// The `timeline` part of a `ui.set` payload: playback zoom and scroll, fit, track heights
+/// and the thumbnail mode.
+fn set_timeline(app: &mut FilmcraftApp, p: &Value) -> Result<(), String> {
+    let Some(tl) = p.get("timeline") else { return Ok(()) };
+    if let Some(v) = tl.get("pps").and_then(Value::as_f64) {
+        app.ui.timeline.target_pps = v;
+    }
+    if let Some(v) = tl.get("scroll").and_then(Value::as_f64) {
+        app.ui.timeline.target_scroll = v;
+    }
+    if tl.get("fit").and_then(Value::as_bool) == Some(true) {
+        app.ui.timeline.fit_pending = true;
+    }
+    if let Some(v) = tl.get("videoTrackHeight").and_then(Value::as_f64) {
+        app.ui.timeline.video_track_h = v as f32;
+    }
+    if let Some(v) = tl.get("audioTrackHeight").and_then(Value::as_f64) {
+        app.ui.timeline.audio_track_h = v as f32;
+    }
+    // Show Video Thumbnails: "off" or a mode ("head", "headAndTail", "continuous")
+    if let Some(m) = tl.get("thumbnails").and_then(Value::as_str) {
+        if m.eq_ignore_ascii_case("off") {
+            app.ui.timeline.show_thumbnails = false;
+        } else {
+            let Some(mode) = ThumbnailMode::from_name(m) else {
+                return Err(format!("unknown thumbnail mode `{m}` (off, head, headAndTail, continuous)"));
+            };
+            app.ui.timeline.show_thumbnails = true;
+            app.ui.timeline.thumbnail_mode = mode;
+        }
+    }
+    Ok(())
+}
+
+/// The `gfxEdit` part of a `ui.set` payload: which layer the Type tool edits. Resolves that
+/// layer's identity from the document and refreshes the IME target when it changes.
+fn set_gfx_edit(app: &mut FilmcraftApp, v: &Value) -> Result<(), String> {
+    match serde_json::from_value::<Option<crate::state::GfxEdit>>(v.clone()) {
+        Ok(mut e) => {
+            // An explicit `ui.set.gfxEdit {clip, layer}` names the layer currently at
+            // that index. Resolve its identity from the document instead of inheriting
+            // a stale uid/fingerprint from a previous edit session: after a reorder,
+            // delete or undo the requested index may now hold a different layer.
+            if let Some(new) = e.as_mut() {
+                match crate::panels::graphics::current_layer_identity(&app.session, new.clip, new.layer) {
+                    Some((uid, fingerprint)) => {
+                        new.uid = uid;
+                        new.fingerprint = fingerprint;
+                    }
+                    None => {
+                        new.uid = 0;
+                        new.fingerprint = 0;
+                    }
+                }
+            }
+            let changed = match (&app.ui.gfx_edit, &e) {
+                (None, None) => false,
+                (Some(old), Some(new)) => {
+                    // A stable uid is the owner key. The compact fingerprint only
+                    // decides identity for a uid-less layer, and zero there means
+                    // "the requested index" rather than a different owner.
+                    old.clip != new.clip
+                        || old.layer != new.layer
+                        || old.uid != new.uid
+                        || (new.uid == 0 && old.fingerprint != 0 && old.fingerprint != new.fingerprint)
+                }
+                _ => true,
+            };
+            if changed {
+                app.restart_ime_target();
+            } else if let (Some(old), Some(new)) = (&app.ui.gfx_edit, &e)
+                && (old.caret, old.anchor) != (new.caret, new.anchor)
+            {
+                // Caret is not part of the stable owner. Only a known composition
+                // becomes stale; commit-only input without one remains eligible.
+                app.invalidate_ime_composition();
+            }
+            app.ui.gfx_edit = e;
+            Ok(())
+        }
+        Err(e) => Err(format!("`gfxEdit`: {e}")),
+    }
+}
+
+/// The `program` / `source` parts of a `ui.set` payload: serde fields of `MonitorView`,
+/// merged into the current state.
+fn set_monitor_views(app: &mut FilmcraftApp, p: &Value) -> Result<(), String> {
+    // Monitor view state (serde fields of `MonitorView`), merged into the current state.
+    for k in ["program", "source"] {
+        let Some(patch) = p.get(k).and_then(Value::as_object) else { continue };
+        let mv = if k == "program" { &mut app.ui.program } else { &mut app.ui.source };
+        let mut cur = serde_json::to_value(&*mv).unwrap_or_default();
+        if let Some(o) = cur.as_object_mut() {
+            for (f, v) in patch {
+                o.insert(f.clone(), v.clone());
+            }
+        }
+        match serde_json::from_value(cur) {
+            Ok(m) => *mv = m,
+            Err(e) => return Err(format!("`{k}`: {e}")),
+        }
+    }
+    Ok(())
+}
+
+/// The `projectPanel` / `mediaBrowser` parts of a `ui.set` payload: each panel's view state,
+/// merged.
+fn set_panel_views(app: &mut FilmcraftApp, p: &Value) -> Result<(), String> {
+    // Project panel / Media Browser view state (`panels::project`, `panels::media_browser`), merged
+    for (k, which) in [("projectPanel", 0), ("mediaBrowser", 1)] {
+        let Some(patch) = p.get(k) else { continue };
+        let mut cur = if which == 0 { serde_json::to_value(&app.ui.project_panel) } else { serde_json::to_value(&app.ui.media_browser) }.unwrap_or_default();
+        merge(&mut cur, patch);
+        let r = if which == 0 {
+            serde_json::from_value(cur).map(|v| app.ui.project_panel = v)
+        } else {
+            serde_json::from_value(cur).map(|v| app.ui.media_browser = v)
+        };
+        if let Err(e) = r {
+            return Err(format!("`{k}`: {e}"));
+        }
+    }
+    Ok(())
 }
 
 fn handle_synthetic_input(app: &mut FilmcraftApp, p: &Value, method: &str) -> Outcome {

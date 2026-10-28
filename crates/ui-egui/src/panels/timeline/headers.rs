@@ -1,8 +1,22 @@
 use super::layout::Row;
-use super::*;
+use super::{
+    Align2, Color32, CursorIcon, FilmcraftApp, Icon, MASTER_H, Rect, Sense, Sequence, Stroke, StrokeKind, TRACK_HEADER_TINT, Tokens, TrackKind, Value, json,
+    label_color, pos2, vec2,
+};
 
 /// A Premiere track-header button (patch / target): highlight-blue fill when on, full track height.
-fn patch_button(ui: &mut egui::Ui, r: Rect, clip: Rect, label: &str, on: bool, show_off: bool, id: egui::Id, t: &Tokens) -> egui::Response {
+struct PatchButton<'a> {
+    rect: Rect,
+    clip: Rect,
+    label: &'a str,
+    active: bool,
+    show_inactive: bool,
+    id: egui::Id,
+    tokens: &'a Tokens,
+}
+
+fn patch_button(ui: &mut egui::Ui, button: PatchButton<'_>) -> egui::Response {
+    let PatchButton { rect: r, clip, label, active: on, show_inactive: show_off, id, tokens: t } = button;
     let resp = ui.interact(r.intersect(clip), id, Sense::click());
     let p = ui.painter().with_clip_rect(clip);
     if on {
@@ -76,7 +90,20 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
         let patched = if r.kind == TrackKind::Video { tg.video_dest == Some(r.track) } else { tg.audio_dest == Some(r.track) };
         let pr = btn_rect(13.0);
         app.auto.add(&format!("timeline.track.{label}.sourcePatch"), pr, "Source patch");
-        if patch_button(ui, pr, visible, &label, patched, false, egui::Id::unique(("patch", r.track.0)), t).clicked() {
+        if patch_button(
+            ui,
+            PatchButton {
+                rect: pr,
+                clip: visible,
+                label: &label,
+                active: patched,
+                show_inactive: false,
+                id: egui::Id::unique(("patch", r.track.0)),
+                tokens: t,
+            },
+        )
+        .clicked()
+        {
             actions.push(("timeline.setTargeting".into(), json!({"track": r.track.0, "sourcePatch": !patched})));
         }
         // 2. track lock
@@ -104,7 +131,20 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
         let targeted = tg.targeted.contains(&r.track);
         let trr = btn_rect(61.0);
         app.auto.add(&format!("timeline.track.{label}.target"), trr, "Toggle track targeting");
-        if patch_button(ui, trr, visible, &label, targeted, true, egui::Id::unique(("target", r.track.0)), t).clicked() {
+        if patch_button(
+            ui,
+            PatchButton {
+                rect: trr,
+                clip: visible,
+                label: &label,
+                active: targeted,
+                show_inactive: true,
+                id: egui::Id::unique(("target", r.track.0)),
+                tokens: t,
+            },
+        )
+        .clicked()
+        {
             actions.push(("timeline.setTargeting".into(), json!({"track": r.track.0, "targeted": !targeted})));
         }
         // 4. upper line icons

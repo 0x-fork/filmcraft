@@ -5,7 +5,10 @@ use super::handles::{
 use super::ime::{current_graphics_ime_target, draw_preedit, graphics_ime_target, note_graphics_ime_editor, reconcile_gfx_edit};
 use super::layer_identity::{current_layer_text, current_layer_uid, layer_display_name_view};
 use super::text_edit::{char_boundary_floor, text_edit, text_of};
-use super::*;
+use super::{
+    Affine, ClipId, Color32, FilmcraftApp, GfxEdit, ImeTarget, ItemKind, LayerView, Pos2, Rect, Sense, Stroke, StrokeKind, Tool, Value, Vec2, eval_layer, json,
+    layer_indices, pos2, selected_graphic, text_layout, vec2,
+};
 
 /// `graphics.newText` for the Type tool: point text at `at`, or paragraph text in the box from
 /// `at` to `corner`.

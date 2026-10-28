@@ -185,17 +185,17 @@ fn click_selection(current: &[ItemId], order: &[ItemId], anchor: Option<ItemId>,
 }
 
 /// Click / double-click / drag / context menu of an item (row, card).
-pub fn item_interactions(
-    app: &mut FilmcraftApp,
-    ui: &egui::Ui,
-    v: &View,
-    resp: &egui::Response,
-    id: ItemId,
-    kind: &ItemKind,
-    actions: &mut Actions,
-    drag: bool,
-    menu: bool,
-) {
+pub(super) struct ItemInteraction<'a> {
+    view: &'a View,
+    response: &'a egui::Response,
+    item: ItemId,
+    kind: &'a ItemKind,
+    allow_drag: bool,
+    allow_menu: bool,
+}
+
+pub(super) fn item_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, actions: &mut Actions, interaction: ItemInteraction<'_>) {
+    let ItemInteraction { view: v, response: resp, item: id, kind, allow_drag: drag, allow_menu: menu } = interaction;
     if resp.clicked() {
         let mods = click_modifiers(ui);
         let order = if mods.shift { items_in_view(app, v, &app.ui.project_search.to_ascii_lowercase()) } else { Vec::new() };
@@ -785,7 +785,7 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
         }
         app.auto.add(&format!("{}.item.{}", v.prefix, id.0), r.intersect(ui.clip_rect()), &it.name);
         slow_click_rename(app, ui, &resp, name_r, id, selected);
-        item_interactions(app, ui, v, &resp, id, &it.kind, actions, true, true);
+        item_interactions(app, ui, actions, ItemInteraction { view: v, response: &resp, item: id, kind: &it.kind, allow_drag: true, allow_menu: true });
     }
 }
 
@@ -988,7 +988,12 @@ pub fn icon_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
                     note_hit(ui, v, id, r);
                     let name_r = Rect::from_min_max(pos2(r.min.x, r.min.y + th_h), r.max);
                     slow_click_rename(app, ui, &resp, name_r, id, was_selected);
-                    item_interactions(app, ui, v, &resp, id, &kind, actions, true, true);
+                    item_interactions(
+                        app,
+                        ui,
+                        actions,
+                        ItemInteraction { view: v, response: &resp, item: id, kind: &kind, allow_drag: true, allow_menu: true },
+                    );
                 }
             }
         }
@@ -1058,7 +1063,12 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
                 ui.painter().text(br.center(), Align2::CENTER_CENTER, format!("×{n}"), Tokens::ui(10.0), Color32::WHITE);
                 app.auto.add(&format!("{}.stack.{s}", v.prefix), br, &format!("Stack of {n}"));
             }
-            item_interactions(app, ui, v, &resp, ItemId(c.item), &kind, actions, false, false);
+            item_interactions(
+                app,
+                ui,
+                actions,
+                ItemInteraction { view: v, response: &resp, item: ItemId(c.item), kind: &kind, allow_drag: false, allow_menu: false },
+            );
             // Escape puts the cards back and drops nothing until the button comes up (#580); egui
             // also ends the drag on Escape, so it arrives as a stop as often as during the drag
             let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));

@@ -1,4 +1,6 @@
-use super::{AUDIO_RETRY_S, AUDIO_STALL_S, FilmcraftApp, Tick, frames, json, panels, play_ahead, shuttle};
+#[cfg(not(target_arch = "wasm32"))]
+use super::play_ahead;
+use super::{AUDIO_RETRY_S, AUDIO_STALL_S, FilmcraftApp, Tick, frames, json, panels, shuttle};
 #[cfg(test)]
 use filmcraft_engine::Session;
 
